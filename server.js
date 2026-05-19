@@ -316,8 +316,11 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🚤 ボートレースサーバー起動 → http://localhost:${PORT}`);
-  console.log(`   平和島=04 / 芦屋=21`);
-  console.log(`   例: http://localhost:${PORT}/api/all?jcd=04&hd=20260618&rno=1\n`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`\n🚤 ボートレースサーバー起動 → http://localhost:${PORT}`);
+    console.log(`   平和島=04 / 芦屋=21\n`);
+  });
+}
+
+module.exports = app;
