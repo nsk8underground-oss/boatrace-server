@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>芦屋 予想</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+:root{
+  --bg:#07101d;--bg2:#0d1825;--bg3:#121f30;
+  --border:rgba(0,180,255,0.15);--border2:rgba(0,180,255,0.32);
+  --accent:#00b4ff;--accent2:#00ffcc;--gold:#f5c518;--red:#ff4060;
+  --orange:#ff8c30;--purple:#a875ff;--text:#c8e0ff;--muted:#4e6a88;
+  --mono:'Share Tech Mono',monospace;--sans:'Noto Sans JP',sans-serif;
+  --hdr:52px;--nav:56px;--safe-b:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--sans);}
+button{touch-action:manipulation;font-family:var(--sans);}
+input,select{font-family:var(--sans);}
+#hdr{position:fixed;top:0;left:0;right:0;height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 12px;z-index:200;padding-top:env(safe-area-inset-top,0);}
+.hdr-l{display:flex;align-items:center;gap:10px;}
+.race-tag{background:rgba(0,180,255,0.15);border:1px solid var(--accent);color:var(--accent);font-family:var(--mono);font-size:13px;font-weight:700;padding:4px 9px;border-radius:3px;white-space:nowrap;}
+.race-tag.live{background:rgba(255,64,96,0.15);border-color:var(--red);color:var(--red);animation:pulse 1.5s ease-in-out infinite;}
+.race-tag.next{background:rgba(245,193,24,0.15);border-color:var(--gold);color:var(--gold);}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.45;}}
+.hdr-info{line-height:1.3;}
+.hdr-name{font-size:12px;font-weight:500;}
+.hdr-sub{font-size:10px;color:var(--muted);font-family:var(--mono);}
+.hdr-r{display:flex;align-items:center;gap:8px;}
+.clock{font-family:var(--mono);font-size:14px;color:var(--accent);}
+.fetch-btn{background:rgba(0,255,204,0.1);border:1px solid var(--accent2);color:var(--accent2);font-size:12px;font-weight:700;padding:6px 11px;border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:5px;transition:opacity 0.2s;}
+.fetch-btn:active{opacity:0.6;}
+.fetch-btn:disabled{opacity:0.35;cursor:not-allowed;}
+.spin{display:inline-block;font-style:normal;animation:spin 0.7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+#content{position:fixed;top:var(--hdr);left:0;right:0;bottom:calc(var(--nav) + var(--safe-b));overflow:hidden;}
+.page{display:none;height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:12px;}
+.page.active{display:block;}
+#nav{position:fixed;bottom:0;left:0;right:0;height:calc(var(--nav) + var(--safe-b));background:var(--bg2);border-top:1px solid var(--border);display:grid;grid-template-columns:repeat(4,1fr);padding-bottom:var(--safe-b);}
+.nav-btn{background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:6px 4px;color:var(--muted);}
+.nav-btn.active{color:var(--accent);}
+.nav-icon{font-size:20px;line-height:1;}
+.nav-lbl{font-size:9px;letter-spacing:0.05em;}
+.sec{font-size:10px;color:var(--muted);letter-spacing:0.2em;font-family:var(--mono);padding:12px 14px 6px;display:flex;align-items:center;gap:8px;}
+.sec::after{content:'';flex:1;height:1px;background:var(--border);}
+/* ERROR / LOADING STATE */
+.state-box{margin:20px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:24px 20px;text-align:center;}
+.state-title{font-size:15px;font-weight:700;margin-bottom:8px;}
+.state-sub{font-size:12px;color:var(--muted);line-height:1.6;}
+.state-box.err{border-color:rgba(255,64,96,0.3);}
+.state-box.loading .spin-big{font-size:28px;display:block;animation:spin 1s linear infinite;margin-bottom:12px;}
+/* DATE PICKER */
+.date-bar{display:flex;align-items:center;gap:8px;padding:10px 14px 0;}
+.date-input{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:13px;padding:6px 10px;border-radius:5px;outline:none;flex:1;}
+.date-input:focus{border-color:var(--accent);}
+.go-btn{background:rgba(0,180,255,0.15);border:1px solid var(--accent);color:var(--accent);font-size:12px;font-weight:700;padding:7px 14px;border-radius:5px;cursor:pointer;white-space:nowrap;}
+/* RACE CHIPS */
+.race-scroll{display:flex;gap:8px;padding:8px 14px 4px;overflow-x:auto;scrollbar-width:none;}
+.race-scroll::-webkit-scrollbar{display:none;}
+.race-chip{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;cursor:pointer;text-align:center;min-width:64px;}
+.race-chip.active{background:rgba(0,180,255,0.15);border-color:var(--accent);}
+.chip-num{font-family:var(--mono);font-size:13px;font-weight:700;}
+.chip-time{font-size:10px;color:var(--muted);font-family:var(--mono);}
+/* COND */
+.cond-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 14px;}
+.cond-box{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;}
+.cond-lbl{font-size:9px;color:var(--muted);letter-spacing:0.12em;font-family:var(--mono);margin-bottom:3px;}
+.cond-val{font-size:14px;font-weight:500;}
+.cond-val.live{color:var(--accent2);}
+.cond-sel{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:12px;padding:3px 5px;border-radius:4px;width:100%;margin-top:2px;-webkit-appearance:none;outline:none;}
+/* ADVICE */
+.adv-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;padding:12px 14px;}
+.adv-title{font-size:11px;font-family:var(--mono);font-weight:700;margin-bottom:8px;}
+.adv-item{display:flex;align-items:flex-start;gap:7px;margin-bottom:7px;}
+.adv-badge{font-size:10px;font-weight:700;font-family:var(--mono);padding:2px 7px;border-radius:3px;white-space:nowrap;flex-shrink:0;}
+.ab-g{background:rgba(0,255,204,0.12);color:var(--accent2);border:1px solid rgba(0,255,204,0.25);}
+.ab-r{background:rgba(255,64,96,0.12);color:var(--red);border:1px solid rgba(255,64,96,0.25);}
+.ab-y{background:rgba(245,193,24,0.12);color:var(--gold);border:1px solid rgba(245,193,24,0.25);}
+.ab-m{background:rgba(78,106,136,0.15);color:var(--muted);border:1px solid rgba(78,106,136,0.25);}
+.adv-text{font-size:12px;line-height:1.5;color:var(--text);}
+/* DEMEME */
+.dememe-scroll{display:flex;gap:8px;padding:4px 14px 8px;overflow-x:auto;scrollbar-width:none;}
+.dememe-scroll::-webkit-scrollbar{display:none;}
+.dc{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:88px;}
+.dc.hot{border-color:rgba(245,193,24,0.4);}
+.d-circles{display:flex;align-items:center;gap:2px;margin-bottom:3px;}
+.d-dot{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;font-size:11px;font-weight:700;}
+.d-sep{font-size:9px;color:var(--muted);}
+.d-rate{font-size:10px;color:var(--muted);font-family:var(--mono);}
+.d-bar{height:2px;background:rgba(255,255,255,0.06);border-radius:1px;margin-top:4px;}
+.d-fill{height:100%;border-radius:1px;}
+/* ENTRY */
+.entry-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;overflow:hidden;transition:border-color 0.15s;}
+.entry-card.fixed{border-color:var(--gold);}
+.entry-top{display:flex;align-items:stretch;}
+.lane-col{display:flex;align-items:center;justify-content:center;width:44px;font-size:22px;font-weight:700;font-family:var(--mono);flex-shrink:0;}
+.l1{background:#fff;color:#111;}.l2{background:#2020ff;color:#fff;}.l3{background:#cc0000;color:#fff;}.l4{background:#555;color:#fff;}.l5{background:#aa8800;color:#fff;}.l6{background:#006000;color:#fff;}
+.entry-main{flex:1;padding:10px 10px 8px;min-width:0;}
+.entry-row1{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+.entry-name{font-size:15px;font-weight:700;}
+.ecls{font-size:11px;font-family:var(--mono);font-weight:700;}
+.cls-A1{color:var(--gold);}.cls-A2{color:#aaa;}.cls-B1{color:#7ad;}.cls-B2{color:var(--muted);}
+.entry-row2{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:7px;}
+.sm{text-align:center;}
+.sm-l{font-size:9px;color:var(--muted);font-family:var(--mono);}
+.sm-v{font-size:12px;font-weight:500;font-family:var(--mono);}
+.sm-hi{color:var(--accent2);}.sm-md{color:var(--accent);}.sm-lo{color:var(--muted);}
+.sm-div{width:1px;height:22px;background:var(--border);}
+.prob-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.prob-lbl{font-size:10px;color:var(--muted);font-family:var(--mono);white-space:nowrap;}
+.prob-track{flex:1;height:5px;background:rgba(255,255,255,0.07);border-radius:3px;overflow:hidden;}
+.prob-fill{height:100%;border-radius:3px;}
+.prob-pct{font-size:12px;font-weight:700;font-family:var(--mono);min-width:34px;text-align:right;}
+.odds-col{padding:10px 10px 10px 6px;display:flex;flex-direction:column;align-items:center;justify-content:center;border-left:1px solid var(--border);flex-shrink:0;}
+.odds-val{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--gold);}
+.odds-lbl{font-size:9px;color:var(--muted);}
+.entry-bot{border-top:1px solid var(--border);background:rgba(0,0,0,0.2);padding:7px 10px;}
+.mrow{display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap;}
+.motor-lbl{font-size:10px;color:var(--muted);font-family:var(--mono);white-space:nowrap;flex-shrink:0;}
+.mg-btns{display:flex;gap:4px;}
+.mg-btn{background:none;border:1px solid var(--border);color:var(--muted);font-family:var(--mono);font-size:12px;font-weight:700;width:32px;height:28px;border-radius:4px;cursor:pointer;}
+.mg-S.on{background:rgba(255,64,96,0.2);border-color:var(--red);color:var(--red);}
+.mg-A.on{background:rgba(245,193,24,0.2);border-color:var(--gold);color:var(--gold);}
+.mg-B.on{background:rgba(0,180,255,0.2);border-color:var(--accent);color:var(--accent);}
+.mg-C.on{background:rgba(0,255,204,0.15);border-color:var(--accent2);color:var(--accent2);}
+.mg-D.on{background:rgba(78,106,136,0.2);border-color:var(--muted);color:var(--muted);}
+.fix1-btn{margin-left:auto;background:none;border:1px solid var(--border2);color:var(--muted);font-size:10px;font-family:var(--mono);font-weight:700;padding:4px 10px;border-radius:3px;cursor:pointer;white-space:nowrap;}
+.fix1-btn.on{background:rgba(245,193,24,0.15);border-color:var(--gold);color:var(--gold);}
+.ex-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:5px;}
+.ex-grp{display:flex;align-items:center;gap:5px;}
+.ex-lbl{font-size:10px;color:var(--muted);font-family:var(--mono);white-space:nowrap;flex-shrink:0;}
+.ex-input{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:13px;font-weight:700;padding:4px 7px;border-radius:4px;width:100%;outline:none;min-width:0;}
+.ex-input:focus{border-color:var(--accent2);}
+.ex-input::placeholder{color:var(--muted);font-size:11px;}
+.note-inp{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:12px;padding:5px 8px;border-radius:4px;width:100%;outline:none;}
+.note-inp:focus{border-color:var(--accent2);}
+.note-inp::placeholder{color:var(--muted);}
+/* STATS */
+.stats-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;overflow:hidden;}
+.stats-hdr{display:flex;align-items:center;}
+.stats-lane{display:flex;align-items:center;justify-content:center;width:44px;font-size:20px;font-weight:700;font-family:var(--mono);padding:12px 0;flex-shrink:0;}
+.stats-title{flex:1;padding:10px 12px;}
+.stats-name2{font-size:15px;font-weight:700;}
+.stats-sub{font-size:11px;color:var(--muted);}
+.stats-body{padding:10px 14px;border-top:1px solid var(--border);}
+.s-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px;}
+.s-box{background:var(--bg3);border-radius:6px;padding:8px 6px;text-align:center;}
+.s-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px;line-height:1.3;}
+.s-val{font-size:15px;font-weight:700;font-family:var(--mono);}
+.rate-bars{display:grid;gap:5px;}
+.rate-row{display:flex;align-items:center;gap:8px;}
+.rate-lbl{font-size:11px;color:var(--muted);width:78px;flex-shrink:0;}
+.rate-track{flex:1;height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;}
+.rate-fill{height:100%;border-radius:3px;}
+.rate-pct{font-size:11px;font-weight:700;font-family:var(--mono);width:36px;text-align:right;}
+.ex-disp{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);}
+.ex-d-box{background:var(--bg3);border-radius:6px;padding:8px;text-align:center;}
+.ex-d-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px;}
+.ex-d-val{font-size:18px;font-weight:700;font-family:var(--mono);color:var(--accent2);}
+.ex-d-val.none{color:var(--muted);font-size:13px;}
+/* PREDICT */
+.fixed-bar{margin:8px 14px;background:rgba(245,193,24,0.08);border:1px solid rgba(245,193,24,0.28);border-radius:8px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;}
+.fixed-bar.none{background:rgba(0,180,255,0.05);border-color:var(--border);}
+.pb-main{display:block;width:calc(100% - 28px);margin:0 14px 10px;background:rgba(0,180,255,0.15);border:1px solid var(--accent);color:var(--accent);font-size:14px;font-weight:700;padding:13px;border-radius:8px;cursor:pointer;text-align:center;}
+.pb-main:active{background:rgba(0,180,255,0.25);}
+.pb-main:disabled{opacity:0.4;cursor:not-allowed;}
+.ai-box{background:var(--bg2);border:1px solid rgba(0,255,204,0.2);border-radius:10px;margin:0 14px 8px;padding:14px;}
+.ai-hdr{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.ai-badge{width:24px;height:24px;border:1px solid var(--accent2);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--accent2);font-family:var(--mono);font-weight:bold;flex-shrink:0;}
+.ai-lbl{font-size:11px;font-weight:700;color:var(--accent2);letter-spacing:0.12em;font-family:var(--mono);}
+.ai-text{font-size:12px;line-height:1.85;color:var(--text);}
+.ai-text.loading{color:var(--muted);animation:blink 1s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.3;}}
+.pred-scroll{display:flex;gap:8px;padding:0 14px 8px;overflow-x:auto;scrollbar-width:none;}
+.pred-scroll::-webkit-scrollbar{display:none;}
+.pred-chip{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:110px;}
+.pred-chip.main{border-color:rgba(245,193,24,0.5);}
+.pc-type{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:4px;}
+.pc-val{font-size:18px;font-weight:700;font-family:var(--mono);color:var(--gold);}
+.pc-note{font-size:10px;color:var(--muted);margin-top:2px;}
+.eff-cards{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 14px 8px;}
+.eff-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+.eff-icon{font-size:15px;margin-bottom:3px;}
+.eff-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px;}
+.eff-text{font-size:11px;line-height:1.5;}
+.spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(0,180,255,0.25);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;}
+/* SERVER STATUS */
+.srv-status{display:flex;align-items:center;gap:6px;font-size:10px;font-family:var(--mono);padding:6px 14px 0;}
+.srv-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.srv-dot.ok{background:var(--accent2);box-shadow:0 0 5px var(--accent2);}
+.srv-dot.err{background:var(--red);}
+.srv-dot.checking{background:var(--muted);}
+/* MOTOR INFO BADGE */
+.motor-info-badge{font-size:10px;color:var(--muted);font-family:var(--mono);background:rgba(255,255,255,0.04);padding:2px 7px;border-radius:3px;border:1px solid var(--border);}
+/* TOAST */
+#toast{position:fixed;bottom:calc(var(--nav) + var(--safe-b) + 12px);left:50%;transform:translateX(-50%) translateY(20px);background:rgba(0,200,140,0.92);color:#041a10;font-size:12px;font-weight:700;padding:7px 16px;border-radius:20px;z-index:999;opacity:0;transition:all 0.25s;pointer-events:none;font-family:var(--mono);}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+</style>
+</head>
+<body>
+
+<header id="hdr">
+  <div class="hdr-l">
+    <div class="race-tag" id="hdrTag">芦屋</div>
+    <div class="hdr-info">
+      <div class="hdr-name" id="hdrName">ボートレース芦屋</div>
+      <div class="hdr-sub" id="hdrSub">
+        <span class="srv-status" id="srvStatus">
+          <span class="srv-dot checking" id="srvDot"></span>
+          <span id="srvTxt">サーバー確認中...</span>
+        </span>
+      </div>
+    </div>
+  </div>
+  <div class="hdr-r">
+    <div class="clock" id="clock"></div>
+    <button class="fetch-btn" id="fetchBtn" onclick="fetchAllData()">
+      <i class="r-icon">↻</i> 取得
+    </button>
+  </div>
+</header>
+
+<div id="content">
+
+  <!-- ── PAGE 1: RACE ── -->
+  <div class="page active" id="page-race">
+    <div class="date-bar">
+      <input type="date" class="date-input" id="dateInput">
+      <button class="go-btn" onclick="fetchAllData()">取得</button>
+    </div>
+    <div class="sec">本日のレース</div>
+    <div id="raceScroll" class="race-scroll"></div>
+    <div id="raceStateBox"></div>
+
+    <div class="sec">コンディション設定</div>
+    <div class="cond-grid">
+      <div class="cond-box">
+        <div class="cond-lbl">天候</div>
+        <div class="cond-val live" id="condSky">—</div>
+      </div>
+      <div class="cond-box">
+        <div class="cond-lbl">風向</div>
+        <select class="cond-sel" id="windDir" onchange="updateAdvice();savePrefs()">
+          <option value="追い風">▶ 追い風</option>
+          <option value="向かい風" selected>◀ 向かい風</option>
+          <option value="横風">↕ 横風</option>
+          <option value="無風">○ 無風</option>
+        </select>
+      </div>
+      <div class="cond-box">
+        <div class="cond-lbl">風速</div>
+        <div class="cond-val live" id="condWind">—</div>
+      </div>
+      <div class="cond-box">
+        <div class="cond-lbl">潮位</div>
+        <select class="cond-sel" id="tideType" onchange="updateAdvice();savePrefs()">
+          <option value="満潮">満潮</option>
+          <option value="干潮" selected>干潮</option>
+          <option value="上げ潮">上げ潮</option>
+          <option value="下げ潮">下げ潮</option>
+        </select>
+      </div>
+      <div class="cond-box">
+        <div class="cond-lbl">水温</div>
+        <div class="cond-val live" id="condWater">—</div>
+      </div>
+      <div class="cond-box">
+        <div class="cond-lbl">波高</div>
+        <div class="cond-val live" id="condWave">—</div>
+      </div>
+    </div>
+
+    <div class="sec">風況アドバイス</div>
+    <div class="adv-card">
+      <div class="adv-title" id="windAdvTitle"></div>
+      <div id="windAdvBody"></div>
+    </div>
+    <div class="sec">潮位アドバイス</div>
+    <div class="adv-card">
+      <div class="adv-title" id="tideAdvTitle"></div>
+      <div id="tideAdvBody"></div>
+    </div>
+    <div class="sec">芦屋 出目リスト</div>
+    <div class="dememe-scroll" id="dememe1"></div>
+  </div>
+
+  <!-- ── PAGE 2: ENTRY ── -->
+  <div class="page" id="page-entry">
+    <div class="sec">出走表 <span style="color:var(--accent2);font-size:9px">— boatrace.jp リアルタイム</span></div>
+    <div id="entryList"></div>
+  </div>
+
+  <!-- ── PAGE 3: STATS ── -->
+  <div class="page" id="page-stats">
+    <div class="sec">選手詳細 <span style="color:var(--accent2);font-size:9px">— 捲り率・差し率・コース別成績</span></div>
+    <div id="statsList"></div>
+  </div>
+
+  <!-- ── PAGE 4: PREDICT ── -->
+  <div class="page" id="page-predict">
+    <div class="sec">AI予想</div>
+    <div class="fixed-bar none" id="fixedBar">
+      <span id="fixedTxt" style="font-size:13px;font-weight:500">1着固定：未設定（出走表で設定）</span>
+    </div>
+    <button class="pb-main" id="predictBtn" onclick="runPredict()">⚡ AI予想を生成</button>
+    <div class="ai-box" id="aiBox" style="display:none">
+      <div class="ai-hdr">
+        <div class="ai-badge">AI</div>
+        <div class="ai-lbl">ASHIYA PREDICTION ENGINE</div>
+      </div>
+      <div class="ai-text" id="aiText"></div>
+    </div>
+    <div id="predCards" style="display:none">
+      <div class="sec">予想結果</div>
+      <div class="pred-scroll" id="predScroll"></div>
+      <div class="eff-cards" id="effCards"></div>
+    </div>
+    <div class="sec">出目リスト参照</div>
+    <div class="dememe-scroll" id="dememe2"></div>
+    <div style="height:8px"></div>
+  </div>
+
+</div>
+
+<nav id="nav">
+  <button class="nav-btn active" onclick="showPage('race',this)"><span class="nav-icon">🏁</span><span class="nav-lbl">レース</span></button>
+  <button class="nav-btn" onclick="showPage('entry',this)"><span class="nav-icon">📋</span><span class="nav-lbl">出走表</span></button>
+  <button class="nav-btn" onclick="showPage('stats',this)"><span class="nav-icon">📊</span><span class="nav-lbl">選手詳細</span></button>
+  <button class="nav-btn" onclick="showPage('predict',this)"><span class="nav-icon">⚡</span><span class="nav-lbl">予想</span></button>
+</nav>
+<div id="toast">💾 保存しました</div>
+
+<script>
+/* ======================== CONFIG ======================== */
+const VENUE_JCD  = '21';
+const VENUE_NAME = '芦屋';
+const SERVER_URL = 'http://localhost:3000'; // サーバーのURL（PORT変更時はここも変更）
+const MEET_KEY   = `br_ashiya_${VENUE_JCD}`;      // localStorage キープレフィックス
+
+/* ======================== STATE ======================== */
+let currentRace = 1;
+let fixedFirst  = null;
+let raceData    = null; // 直近の取得データ
+let serverOk    = false;
+let motorGrades = {};   // lane → grade
+let motorNotes  = {};   // lane → note
+let exhibitData = {};   // race → { lane → {exhibitTime, st} }
+
+/* ======================== STORAGE ======================== */
+function stor(k, v) {
+  try {
+    if (v === undefined) return JSON.parse(localStorage.getItem(k));
+    localStorage.setItem(k, JSON.stringify(v));
+  } catch {}
+  return null;
+}
+function saveMotor(lane, grade, note) {
+  const date = document.getElementById('dateInput').value.replace(/-/g,'');
+  motorGrades[lane] = grade;
+  motorNotes[lane]  = note;
+  stor(`${MEET_KEY}_mg_${date}_l${lane}`, { grade, note });
+}
+function loadMotor(lane) {
+  const date = document.getElementById('dateInput').value.replace(/-/g,'');
+  const saved = stor(`${MEET_KEY}_mg_${date}_l${lane}`);
+  return saved || { grade: motorGrades[lane]||'', note: motorNotes[lane]||'' };
+}
+function saveExhibit(race, lane, exhibitTime, st) {
+  const date = document.getElementById('dateInput').value.replace(/-/g,'');
+  if (!exhibitData[race]) exhibitData[race] = {};
+  exhibitData[race][lane] = { exhibitTime, st };
+  stor(`${MEET_KEY}_ex_${date}_r${race}_l${lane}`, { exhibitTime, st });
+}
+function loadExhibit(race, lane) {
+  const date = document.getElementById('dateInput').value.replace(/-/g,'');
+  return stor(`${MEET_KEY}_ex_${date}_r${race}_l${lane}`) || { exhibitTime:'', st:'' };
+}
+function savePrefs() {
+  stor(`${MEET_KEY}_prefs`, {
+    wind:    document.getElementById('windDir').value,
+    tide:    document.getElementById('tideType').value,
+  });
+}
+function loadPrefs() {
+  const p = stor(`${MEET_KEY}_prefs`);
+  if (!p) return;
+  if (p.wind) document.getElementById('windDir').value = p.wind;
+  if (p.tide) document.getElementById('tideType').value = p.tide;
+}
+
+/* ======================== SERVER CHECK ======================== */
+async function checkServer() {
+  const dot = document.getElementById('srvDot');
+  const txt = document.getElementById('srvTxt');
+  try {
+    const res = await fetch(`${SERVER_URL}/api/health`, { signal: AbortSignal.timeout(3000) });
+    if (res.ok) {
+      serverOk = true;
+      dot.className = 'srv-dot ok';
+      txt.textContent = 'サーバー接続済み';
+      return true;
+    }
+  } catch {}
+  serverOk = false;
+  dot.className = 'srv-dot err';
+  txt.textContent = 'サーバー未起動';
+  return false;
+}
+
+/* ======================== DATA FETCH ======================== */
+async function fetchAllData() {
+  const btn  = document.getElementById('fetchBtn');
+  const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
+  if (!dateStr || dateStr.length !== 8) return alert('日付を選択してください');
+
+  if (!serverOk) {
+    const ok = await checkServer();
+    if (!ok) {
+      showServerError();
+      return;
+    }
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '<i class="spin">↻</i> 取得中...';
+  showLoading('racelist', raceStateBox = document.getElementById('raceStateBox'));
+
+  try {
+    const url = `${SERVER_URL}/api/all?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`;
+    const res  = await fetch(url);
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      showError(data.error || 'データ取得に失敗しました');
+      return;
+    }
+
+    raceData = data;
+    document.getElementById('raceStateBox').innerHTML = '';
+    buildRaceChips(data.schedule);
+    updateWeather(data.weather);
+    buildEntryList(data.racers);
+    buildStatsList(data.racers);
+    updateAdvice();
+    // reset AI
+    document.getElementById('aiBox').style.display = 'none';
+    document.getElementById('predCards').style.display = 'none';
+    showToast('✅ データ取得完了');
+  } catch (e) {
+    showError('通信エラー: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="r-icon">↻</i> 取得';
+  }
+}
+
+async function fetchRace(rno) {
+  if (!serverOk) return;
+  const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
+  if (!dateStr) return;
+
+  currentRace = rno;
+  buildRaceChips(raceData?.schedule || []);
+
+  const btn = document.getElementById('fetchBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="spin">↻</i>';
+
+  try {
+    const url = `${SERVER_URL}/api/all?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${rno}`;
+    const res  = await fetch(url);
+    const data = await res.json();
+    if (!res.ok || data.error) { showError(data.error || 'エラー'); return; }
+    raceData = data;
+    document.getElementById('raceStateBox').innerHTML = '';
+    updateWeather(data.weather);
+    buildEntryList(data.racers);
+    buildStatsList(data.racers);
+  } catch (e) {
+    showError('通信エラー: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="r-icon">↻</i> 取得';
+  }
+}
+
+/* ======================== UI HELPERS ======================== */
+function showLoading(label, el) {
+  if (el) el.innerHTML = `<div class="state-box loading"><span class="spin-big">↻</span><div class="state-title">データ取得中...</div><div class="state-sub">boatrace.jp から最新データを取得しています</div></div>`;
+}
+function showError(msg) {
+  document.getElementById('raceStateBox').innerHTML = `
+    <div class="state-box err">
+      <div class="state-title" style="color:var(--red)">⚠ エラー</div>
+      <div class="state-sub">${msg}</div>
+    </div>`;
+}
+function showServerError() {
+  document.getElementById('raceStateBox').innerHTML = `
+    <div class="state-box err">
+      <div class="state-title" style="color:var(--red)">🔴 サーバー未起動</div>
+      <div class="state-sub" style="text-align:left;margin-top:8px">
+        <strong>以下の手順でサーバーを起動してください：</strong><br><br>
+        1. Node.js をインストール（nodejs.org）<br>
+        2. <code>boatrace-server</code> フォルダで<br>
+        <code>&nbsp;&nbsp;npm install</code><br>
+        <code>&nbsp;&nbsp;node server.js</code><br><br>
+        サーバーが起動したら「取得」を押してください。
+      </div>
+    </div>`;
+}
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+/* ======================== RACE CHIPS ======================== */
+function buildRaceChips(schedule) {
+  const el = document.getElementById('raceScroll');
+  if (!schedule || schedule.length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = schedule.map(r => `
+    <div class="race-chip${r.rno === currentRace ? ' active' : ''}" onclick="fetchRace(${r.rno})">
+      <div class="chip-num">${r.rno}R</div>
+      <div class="chip-time">${r.time}</div>
+    </div>`).join('');
+}
+
+/* ======================== WEATHER ======================== */
+function updateWeather(w) {
+  if (!w) return;
+  const set = (id, val) => { if (val !== undefined && val !== null && val !== '') document.getElementById(id).textContent = val; };
+  set('condSky',   w.sky   || '—');
+  set('condWind',  w.wind  != null ? `${w.wind}m/s` : '—');
+  set('condWater', w.water != null ? `${w.water}℃`  : '—');
+  set('condWave',  w.wave  != null ? `${w.wave}cm`  : '—');
+}
+
+/* ======================== ADVICE DATA ======================== */
+const windAdvice = {
+  '追い風':{c:'var(--accent2)',l:'💨 追い風 — イン優勢',items:[
+    {cls:'ab-g',b:'イン有利',t:'スタートから流れに乗れる1〜2号艇が有利。1号艇逃げ率が上昇する。'},
+    {cls:'ab-y',b:'差し有効',t:'2・3号艇の差しが決まりやすい展開に。内側からのまくり差しに注目。'},
+    {cls:'ab-r',b:'アウト注意',t:'4〜6号艇はターン時に膨らみやすく捲り難易度が上がる。'},
+  ]},
+  '向かい風':{c:'var(--orange)',l:'💨 向かい風 — アウト有利',items:[
+    {cls:'ab-r',b:'まくり増加',t:'インがスタートで遅れやすく、3〜4号艇の捲りが決まる展開に警戒。'},
+    {cls:'ab-y',b:'差し・まくり差し',t:'2号艇差し・3号艇まくり差しが有効。イン逃げ率が低下する。'},
+    {cls:'ab-g',b:'風速依存',t:'6m/s以上では3コース勝率が大幅上昇。荒れ展開の穴狙いチャンス。'},
+  ]},
+  '横風':{c:'var(--purple)',l:'💨 横風 — 荒れ展開',items:[
+    {cls:'ab-r',b:'波乱注意',t:'艇の挙動が不安定になりやすく波乱が起きやすい。穴狙いに好機。'},
+    {cls:'ab-y',b:'モーター重要',t:'エンジン出力の高い艇（評価S・A）ほど影響を受けにくい。'},
+    {cls:'ab-g',b:'内側相対有利',t:'横風でも比較的イン寄りが安定するが風向で大きく変動する。'},
+  ]},
+  '無風':{c:'var(--accent)',l:'💨 無風 — 技量勝負',items:[
+    {cls:'ab-g',b:'イン鉄板',t:'水面穏やかでイン逃げ率が最高になる条件。1号艇信頼度が大幅上昇。'},
+    {cls:'ab-y',b:'勝率重視',t:'純粋な技量差が出やすい。全国・当地勝率を最優先に予想。'},
+    {cls:'ab-m',b:'荒れ少ない',t:'上位人気での決着が多い傾向。堅い買い方が有効。'},
+  ]},
+};
+const tideAdvice = {
+  '満潮':{c:'var(--red)',l:'🌊 満潮 — 水面荒れやすい',items:[
+    {cls:'ab-r',b:'水面不安定',t:'水位が高く波が立ちやすい。ターン難易度上昇、差しが決まりやすくなる。'},
+    {cls:'ab-y',b:'まくり有効',t:'3〜4号艇の大まくりが決まる可能性が増加。波乱に注意。'},
+    {cls:'ab-g',b:'A1級有利',t:'A1級選手のアドバンテージが大きくなる荒れた水面。'},
+  ]},
+  '干潮':{c:'var(--accent2)',l:'🌊 干潮 — 水面安定',items:[
+    {cls:'ab-g',b:'水面穏やか',t:'水位が低く安定。イン逃げが決まりやすい堅い展開になりやすい。'},
+    {cls:'ab-y',b:'差し有効',t:'2号艇の差しが鉄板に近くなる。外からの捲りはやや不利。'},
+    {cls:'ab-m',b:'荒れ少ない',t:'上位人気での決着が多い。堅く買いたい場面。'},
+  ]},
+  '上げ潮':{c:'var(--accent)',l:'🌊 上げ潮 — 内→外へ流れ',items:[
+    {cls:'ab-r',b:'イン不利',t:'潮が内→外へ流れ、インが膨らみやすく捲られやすくなる。'},
+    {cls:'ab-g',b:'アウト有利',t:'4〜5号艇の捲りが入りやすい展開。穴狙いの好機。'},
+    {cls:'ab-y',b:'差しが鍵',t:'潮流を利用した2号艇差しも有効。流れを読む選手が重要。'},
+  ]},
+  '下げ潮':{c:'var(--purple)',l:'🌊 下げ潮 — 外→内へ流れ',items:[
+    {cls:'ab-g',b:'イン安定',t:'潮が外→内に流れ、インが粘れる展開。逃げ率が上昇する。'},
+    {cls:'ab-r',b:'捲り不発',t:'アウト大捲りが潮に逆らう形になりにくく成功率がやや低下。'},
+    {cls:'ab-y',b:'堅め展開',t:'荒れにくく上位人気を信頼しやすい。イン中心の展開が多い。'},
+  ]},
+};
+
+function updateAdvice() {
+  const w = document.getElementById('windDir').value;
+  const t = document.getElementById('tideType').value;
+  renderAdv('windAdvTitle','windAdvBody', windAdvice[w]);
+  renderAdv('tideAdvTitle','tideAdvBody', tideAdvice[t]);
+}
+function renderAdv(tid, bid, d) {
+  document.getElementById(tid).innerHTML = `<span style="color:${d.c}">${d.l}</span>`;
+  document.getElementById(bid).innerHTML = d.items.map(i =>
+    `<div class="adv-item"><span class="adv-badge ${i.cls}">${i.b}</span><span class="adv-text">${i.t}</span></div>`
+  ).join('');
+}
+
+/* ======================== DEMEME ======================== */
+const dememeList=[
+  {c:'1-2-3',r:8.4,hot:true},{c:'1-2-4',r:6.1,hot:true},{c:'1-3-2',r:5.8,hot:true},
+  {c:'2-1-3',r:4.9},{c:'1-3-4',r:4.2},{c:'1-4-2',r:3.9},
+  {c:'2-3-1',r:3.5},{c:'3-1-2',r:3.2},{c:'1-2-6',r:2.9},{c:'2-4-1',r:2.7},
+];
+const lBg=['#fff','#2020ff','#cc0000','#555','#aa8800','#006000'];
+const lFg=['#111','#fff','#fff','#fff','#fff','#fff'];
+function buildDememe(id) {
+  const max = dememeList[0].r;
+  document.getElementById(id).innerHTML = dememeList.map(d => {
+    const dots = d.c.split('-').map(n => `<span class="d-dot" style="background:${lBg[+n-1]};color:${lFg[+n-1]}">${n}</span>`).join('<span class="d-sep">-</span>');
+    const pct  = Math.round(d.r/max*100);
+    return `<div class="dc${d.hot?' hot':''}">
+      ${d.hot?'<div style="font-size:9px;color:var(--gold);font-family:var(--mono);font-weight:700;margin-bottom:2px">HOT🔥</div>':''}
+      <div class="d-circles">${dots}</div>
+      <div class="d-rate">${d.r}%</div>
+      <div class="d-bar"><div class="d-fill" style="width:${pct}%;background:${d.hot?'var(--gold)':'var(--accent)'}"></div></div>
+    </div>`;
+  }).join('');
+}
+
+/* ======================== ENTRY LIST ======================== */
+const pColors=['#00ffcc','#00b4ff','#3ab4ff','#5a7a99','#5a7a99','#5a7a99'];
+
+function buildEntryList(racers) {
+  if (!racers || racers.length === 0) {
+    document.getElementById('entryList').innerHTML = '<div class="state-box"><div class="state-sub">データを取得してください</div></div>';
+    return;
+  }
+  document.getElementById('entryList').innerHTML = racers.map((r, i) => {
+    const isFixed = fixedFirst === r.lane;
+    const md  = loadMotor(r.lane);
+    const ex  = { ...loadExhibit(currentRace, r.lane) };
+    // サーバーから取得できた値で上書き
+    if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
+    if (r.exhibitST   != null) ex.st          = r.exhibitST;
+
+    const rc  = r.allRate   >= 6.5 ? 'sm-hi' : r.allRate   >= 5.5 ? 'sm-md' : 'sm-lo';
+    const lc  = r.localRate >= 6.5 ? 'sm-hi' : r.localRate >= 5.5 ? 'sm-md' : 'sm-lo';
+    const stC = !ex.st ? 'sm-lo' : parseFloat(ex.st) <= 0.10 ? 'sm-hi' : parseFloat(ex.st) >= 0.20 ? 'sm-lo' : 'sm-md';
+    const mgBtns = ['S','A','B','C','D'].map(g =>
+      `<button class="mg-btn mg-${g}${md.grade===g?' on':''}" onclick="clickMG(${r.lane},'${g}')">${g}</button>`
+    ).join('');
+    const odds = r.odds != null ? r.odds.toFixed(1) : '—';
+    const motorInfo = r.motorNo ? `No.${r.motorNo} 2連:${r.motor2Rate?.toFixed(1)||0}%` : '';
+
+    return `<div class="entry-card${isFixed?' fixed':''}" id="ec${r.lane}">
+      <div class="entry-top">
+        <div class="lane-col l${r.lane}">${r.lane}</div>
+        <div class="entry-main">
+          <div class="entry-row1">
+            <span class="entry-name">${r.name||'—'}</span>
+            <span class="ecls cls-${r.cls}">${r.cls||'—'}</span>
+          </div>
+          <div class="entry-row2">
+            <div class="sm"><div class="sm-l">全国勝率</div><div class="sm-v ${rc}">${r.allRate||0}</div></div>
+            <div class="sm-div"></div>
+            <div class="sm"><div class="sm-l">当地勝率</div><div class="sm-v ${lc}">${r.localRate||0}</div></div>
+            <div class="sm-div"></div>
+            <div class="sm"><div class="sm-l">F/L</div><div class="sm-v" style="color:${r.fl?.startsWith('1')?'var(--red)':'var(--muted)'}">${r.fl||'—'}</div></div>
+            <div class="sm-div"></div>
+            <div class="sm"><div class="sm-l">展示タイム</div><div class="sm-v ${ex.exhibitTime?'sm-hi':'sm-lo'}">${ex.exhibitTime||'—'}</div></div>
+            <div class="sm-div"></div>
+            <div class="sm"><div class="sm-l">ST</div><div class="sm-v ${stC}">${ex.st?'.'+String(ex.st).replace('0.',''):'—'}</div></div>
+          </div>
+          ${motorInfo ? `<div style="margin-bottom:6px"><span class="motor-info-badge">⚙️ ${motorInfo}</span></div>` : ''}
+          <div class="prob-row">
+            <span class="prob-lbl">出走確率</span>
+            <div class="prob-track"><div class="prob-fill" style="width:${Math.min((r.allRate/8)*100,100)}%;background:${pColors[i]}"></div></div>
+            <span class="prob-pct" style="color:${pColors[i]}">${r.allRate||0}</span>
+          </div>
+        </div>
+        <div class="odds-col">
+          <div class="odds-val">${odds}</div>
+          <div class="odds-lbl">単勝</div>
+        </div>
+      </div>
+      <div class="entry-bot">
+        <div class="mrow">
+          <span class="motor-lbl">モーター</span>
+          <div class="mg-btns">${mgBtns}</div>
+          <button class="fix1-btn${isFixed?' on':''}" onclick="toggleFixed(${r.lane})">${isFixed?'🏆固定中':'1着固定'}</button>
+        </div>
+        <div class="ex-row">
+          <div class="ex-grp"><span class="ex-lbl">展示タイム</span><input class="ex-input" id="et${r.lane}" type="number" step="0.01" placeholder="6.87" value="${ex.exhibitTime||''}" oninput="saveEx(${r.lane})" style="width:70px"></div>
+          <div class="ex-grp"><span class="ex-lbl">ST</span><input class="ex-input" id="st${r.lane}" type="number" step="0.01" placeholder="0.12" value="${ex.st||''}" oninput="saveEx(${r.lane})" style="width:60px"></div>
+        </div>
+        <input class="note-inp" id="note${r.lane}" placeholder="モーター気配・ターン評価など..." value="${md.note||''}" oninput="saveNote(${r.lane})">
+      </div>
+    </div>`;
+  }).join('') + '<div style="height:8px"></div>';
+}
+
+function clickMG(lane, g) {
+  const md = loadMotor(lane);
+  const ng = md.grade === g ? '' : g;
+  const note = document.getElementById('note'+lane)?.value || md.note;
+  saveMotor(lane, ng, note);
+  buildEntryList(raceData?.racers || []);
+  showToast('💾 保存しました');
+}
+function saveNote(lane) {
+  const md = loadMotor(lane);
+  saveMotor(lane, md.grade, document.getElementById('note'+lane)?.value||'');
+  debouncedToast();
+}
+function saveEx(lane) {
+  const et = document.getElementById('et'+lane)?.value||'';
+  const st = document.getElementById('st'+lane)?.value||'';
+  saveExhibit(currentRace, lane, et, st);
+  debouncedToast();
+  if (document.getElementById('page-stats').classList.contains('active') && raceData) buildStatsList(raceData.racers);
+}
+function toggleFixed(lane) {
+  fixedFirst = fixedFirst === lane ? null : lane;
+  buildEntryList(raceData?.racers || []);
+  updateFixedBar();
+}
+function updateFixedBar() {
+  const bar = document.getElementById('fixedBar');
+  const txt = document.getElementById('fixedTxt');
+  if (fixedFirst) {
+    bar.className = 'fixed-bar';
+    txt.innerHTML = `🏆 <strong style="color:var(--gold)">${fixedFirst}号艇</strong>を1着に固定中`;
+    const old = document.getElementById('fixedClear');
+    if (!old) {
+      const btn = document.createElement('button');
+      btn.id = 'fixedClear'; btn.className = 'fs-clear';
+      btn.textContent = '解除';
+      btn.style.cssText = 'background:none;border:1px solid var(--border);color:var(--muted);font-size:11px;padding:3px 9px;border-radius:3px;cursor:pointer;';
+      btn.onclick = () => { fixedFirst = null; buildEntryList(raceData?.racers||[]); updateFixedBar(); };
+      bar.appendChild(btn);
+    }
+  } else {
+    bar.className = 'fixed-bar none';
+    txt.textContent = '1着固定：未設定（出走表で設定）';
+    document.getElementById('fixedClear')?.remove();
+  }
+}
+let toastTimer;
+function debouncedToast() { clearTimeout(toastTimer); toastTimer = setTimeout(() => showToast('💾 保存しました'), 900); }
+
+/* ======================== STATS LIST ======================== */
+function buildStatsList(racers) {
+  if (!racers || racers.length === 0) {
+    document.getElementById('statsList').innerHTML = '<div class="state-box"><div class="state-sub">データを取得してください</div></div>';
+    return;
+  }
+  document.getElementById('statsList').innerHTML = racers.map(r => {
+    const md = loadMotor(r.lane);
+    const ex = loadExhibit(currentRace, r.lane);
+    if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
+    if (r.exhibitST   != null) ex.st          = r.exhibitST;
+
+    const stNum = parseFloat(ex.st);
+    const mgC = md.grade==='S'?'var(--red)':md.grade==='A'?'var(--gold)':md.grade==='B'?'var(--accent)':md.grade==='C'?'var(--accent2)':'var(--muted)';
+    const mgDisplay = md.grade ? `<span style="color:${mgC};font-family:var(--mono);font-weight:700;font-size:14px">${md.grade}</span>` : '—';
+
+    // コース別傾向（全国データから推定）
+    const nigeRate   = r.lane === 1 ? (r.allRate * 6).toFixed(1) : 0;
+    const sashiRate  = r.lane === 2 ? (r.allRate * 5.5).toFixed(1) : r.lane >= 3 ? (r.allRate * 3).toFixed(1) : 0;
+    const makuriRate = r.lane >= 3 ? (r.allRate * 3.5).toFixed(1) : r.lane === 2 ? (r.allRate * 0.8).toFixed(1) : 0;
+
+    return `<div class="stats-card">
+      <div class="stats-hdr">
+        <div class="stats-lane l${r.lane}">${r.lane}</div>
+        <div class="stats-title">
+          <div class="stats-name2">${r.name||'—'} <span class="ecls cls-${r.cls}" style="font-size:10px">${r.cls||''}</span></div>
+          <div class="stats-sub">${r.branch||''}支部 ｜ ${r.age||''}歳 ${r.weight||''}kg ｜ 登録:${r.regNo||'—'}</div>
+        </div>
+        <div style="padding:10px 12px 10px 0;display:flex;align-items:center;gap:6px">
+          ${mgDisplay}
+          ${md.note ? `<span style="font-size:10px;color:var(--muted)">📝</span>` : ''}
+        </div>
+      </div>
+      <div class="stats-body">
+        <div class="s-grid">
+          <div class="s-box"><div class="s-lbl">全国勝率</div><div class="s-val" style="color:${r.allRate>=6.5?'var(--accent2)':r.allRate>=5.5?'var(--accent)':'var(--muted)'}">${r.allRate||0}</div></div>
+          <div class="s-box"><div class="s-lbl">全国2連率</div><div class="s-val" style="color:var(--accent)">${r.all2Rate||0}<span style="font-size:10px;color:var(--muted)">%</span></div></div>
+          <div class="s-box"><div class="s-lbl">全国3連率</div><div class="s-val" style="color:var(--muted)">${r.all3Rate||0}<span style="font-size:10px;color:var(--muted)">%</span></div></div>
+          <div class="s-box"><div class="s-lbl">当地勝率</div><div class="s-val" style="color:${r.localRate>=6.5?'var(--accent2)':r.localRate>=5.5?'var(--accent)':'var(--muted)'}">${r.localRate||0}</div></div>
+          <div class="s-box"><div class="s-lbl">平均ST</div><div class="s-val" style="color:${r.avgST<=0.12?'var(--gold)':r.avgST>=0.22?'var(--red)':'var(--accent2)'}">.${String(Math.round((r.avgST||0.18)*100)).padStart(2,'0')}</div></div>
+          <div class="s-box"><div class="s-lbl">F/L</div><div class="s-val" style="color:${(r.fl||'0/0').startsWith('1')?'var(--red)':'var(--muted)'}">${r.fl||'0/0'}</div></div>
+        </div>
+        <div class="rate-bars">
+          ${r.lane===1?`<div class="rate-row"><span class="rate-lbl">逃げ率(推定)</span><div class="rate-track"><div class="rate-fill" style="width:${Math.min(nigeRate,100)}%;background:var(--accent2)"></div></div><span class="rate-pct" style="color:var(--accent2)">${nigeRate}%</span></div>`:''}
+          ${r.lane>=2?`<div class="rate-row"><span class="rate-lbl">差し率(推定)</span><div class="rate-track"><div class="rate-fill" style="width:${Math.min(sashiRate,100)}%;background:var(--accent)"></div></div><span class="rate-pct" style="color:var(--accent)">${sashiRate}%</span></div>`:''}
+          ${r.lane>=2?`<div class="rate-row"><span class="rate-lbl">捲り率(推定)</span><div class="rate-track"><div class="rate-fill" style="width:${Math.min(makuriRate,100)}%;background:var(--gold)"></div></div><span class="rate-pct" style="color:var(--gold)">${makuriRate}%</span></div>`:''}
+          <div class="rate-row"><span class="rate-lbl">モーター2連率</span><div class="rate-track"><div class="rate-fill" style="width:${Math.min(r.motor2Rate||0,100)}%;background:var(--purple)"></div></div><span class="rate-pct" style="color:var(--purple)">${r.motor2Rate||0}%</span></div>
+        </div>
+        <div class="ex-disp">
+          <div class="ex-d-box"><div class="ex-d-lbl">展示タイム</div><div class="ex-d-val${ex.exhibitTime?'':' none'}">${ex.exhibitTime||'未入力'}</div></div>
+          <div class="ex-d-box"><div class="ex-d-lbl">ST</div><div class="ex-d-val${ex.st?'':' none'}" style="color:${ex.st?(parseFloat(ex.st)<=0.10?'var(--gold)':parseFloat(ex.st)>=0.20?'var(--red)':'var(--accent2)'):'var(--muted)'}">
+            ${ex.st?'.'+String(ex.st).replace('0.',''):'未入力'}
+          </div></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('') + '<div style="height:8px"></div>';
+}
+
+/* ======================== AI PREDICT ======================== */
+async function runPredict() {
+  const btn = document.getElementById('predictBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> 解析中...';
+  const aiBox   = document.getElementById('aiBox');
+  const aiText  = document.getElementById('aiText');
+  const predCards = document.getElementById('predCards');
+  aiBox.style.display = 'block';
+  predCards.style.display = 'none';
+  aiText.textContent = 'boatrace.jp の最新データ + 風況・潮位・モーター評価を解析中...';
+  aiText.className = 'ai-text loading';
+
+  const racers = raceData?.racers || [];
+  const wind   = document.getElementById('windDir').value;
+  const tide   = document.getElementById('tideType').value;
+  const fixLine= fixedFirst ? `\n【1着固定】${fixedFirst}号艇を1着に固定。三連単は全て${fixedFirst}-?-?の形式で。` : '';
+
+  const lines = racers.map((r, i) => {
+    const md = loadMotor(r.lane);
+    const ex = loadExhibit(currentRace, r.lane);
+    if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
+    if (r.exhibitST   != null) ex.st          = r.exhibitST;
+    return `${r.lane}号艇:${r.name||'不明'}(${r.cls||'—'}/${r.branch||'—'}) `+
+      `全国${r.allRate||0}/当地${r.localRate||0}/2連${r.all2Rate||0}% F/L:${r.fl||'0/0'} avgST:${r.avgST||0.18} `+
+      `単勝:${r.odds!=null?r.odds.toFixed(1)+'倍':'不明'} モーター:${md.grade||'未評価'}(2連${r.motor2Rate||0}%) `+
+      `展示:${ex.exhibitTime||'不明'} 展示ST:${ex.st||'不明'} メモ:${md.note||'なし'}`;
+  }).join('\n');
+
+  const wAdv = windAdvice[wind]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
+  const tAdv = tideAdvice[tide]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
+  const weather = raceData?.weather || {};
+
+  const prompt = `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
+
+【${VENUE_NAME} 第${currentRace}レース】
+天候:${weather.sky||'不明'} 風速:${weather.wind||'不明'}m/s 水温:${weather.water||'不明'}℃ 波高:${weather.wave||'不明'}cm
+選択条件 — 風向:${wind} / 潮位:${tide}
+${fixLine}
+
+【風況分析】${wAdv}
+【潮位分析】${tAdv}
+
+【出走表（boatrace.jp 実データ）】
+${lines}
+
+【芦屋出目傾向】1-2-3(6.8%), 1-3-2(6.2%), 2-1-3(5.5%), 3-1-2(4.8%)
+
+JSON形式のみ(バッククォート不要):
+{"analysis":"280文字以内の総合分析","wind_effect":"90文字","tide_effect":"90文字","motor_comment":"80文字","honmei":"${fixedFirst?fixedFirst+'-?-?':'?-?-?'}","taisho":"対抗2着艇番","sanren_list":["三連単1","三連単2","三連単3"],"focus":"注目艇番","focus_reason":"80文字"}`;
+
+  try {
+    const res  = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1200,
+        messages: [{ role: 'user', content: prompt }] })
+    });
+    const data = await res.json();
+    const raw  = data.content.map(c=>c.text||'').join('').replace(/```json|```/g,'').trim();
+    const jm   = raw.match(/\{[\s\S]*\}/);
+    if (!jm) throw new Error('no json');
+    const r = JSON.parse(jm[0]);
+    aiText.className = 'ai-text';
+    aiText.innerHTML = `<strong style="color:var(--accent2)">▶ AI予想レポート</strong><br><br>${r.analysis}<br><br>`+
+      `<strong style="color:var(--gold)">注目: ${r.focus}号艇</strong> — ${r.focus_reason}`;
+    const sl = r.sanren_list || [r.honmei];
+    const chips = [
+      {t:'◎本命', v:r.honmei, main:true, note: fixedFirst?`${fixedFirst}号艇固定`:'最有力'},
+      ...sl.map((s,i) => ({t:i===0?'三連単①':i===1?'三連単②':'三連単③', v:s, main:i===0, note:i===0?'最有力':i===1?'対抗':'押さえ'}))
+    ];
+    document.getElementById('predScroll').innerHTML = chips.map(c =>
+      `<div class="pred-chip${c.main?' main':''}"><div class="pc-type">${c.t}</div><div class="pc-val">${c.v}</div><div class="pc-note">${c.note}</div></div>`
+    ).join('');
+    document.getElementById('effCards').innerHTML = `
+      <div class="eff-card"><div class="eff-icon">💨</div><div class="eff-lbl">風況影響</div><div class="eff-text">${r.wind_effect}</div></div>
+      <div class="eff-card"><div class="eff-icon">🌊</div><div class="eff-lbl">潮位影響</div><div class="eff-text">${r.tide_effect}</div></div>
+      <div class="eff-card"><div class="eff-icon">⚙️</div><div class="eff-lbl">モーター</div><div class="eff-text">${r.motor_comment}</div></div>`;
+    predCards.style.display = 'block';
+  } catch (e) {
+    aiText.className = 'ai-text';
+    aiText.textContent = '予想生成中にエラーが発生しました。もう一度お試しください。';
+  }
+  btn.disabled = false;
+  btn.innerHTML = '⚡ AI予想を生成';
+}
+
+/* ======================== PAGE SWITCH ======================== */
+function showPage(name, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  btn.classList.add('active');
+}
+
+/* ======================== CLOCK ======================== */
+function tick() {
+  const n = new Date();
+  document.getElementById('clock').textContent =
+    [n.getHours(), n.getMinutes(), n.getSeconds()].map(v=>String(v).padStart(2,'0')).join(':');
+}
+
+/* ======================== INIT ======================== */
+(function init() {
+  // デフォルト日付 = 今日
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth()+1).padStart(2,'0');
+  const d = String(now.getDate()).padStart(2,'0');
+  document.getElementById('dateInput').value = `${y}-${m}-${d}`;
+
+  loadPrefs();
+  buildDememe('dememe1');
+  buildDememe('dememe2');
+  updateAdvice();
+  buildEntryList([]);
+  buildStatsList([]);
+  updateFixedBar();
+  tick();
+  setInterval(tick, 1000);
+  checkServer();
+  setInterval(checkServer, 30000);
+
+  // 起動メッセージ
+  document.getElementById('raceStateBox').innerHTML = `
+    <div class="state-box">
+      <div class="state-title">👋 使い方</div>
+      <div class="state-sub" style="text-align:left">
+        1. <strong>boatrace-server</strong> を起動<br>
+        &nbsp;&nbsp;<code>npm install &amp;&amp; node server.js</code><br><br>
+        2. 日付を選択して「取得」ボタンを押す<br><br>
+        3. 芦屋の開催日にのみデータが取得できます<br>
+        &nbsp;&nbsp;（次回開催: 開催スケジュールを確認）
+      </div>
+    </div>`;
+})();
+</script>
+</body>
+</html>
