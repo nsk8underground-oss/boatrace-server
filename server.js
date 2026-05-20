@@ -35,7 +35,7 @@ async function fetchHtml(url, retries = 3) {
   for (let i = 0; i <= retries; i++) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
+      const timer = setTimeout(() => controller.abort(), 15000);
       const res = await fetch(url, {
         headers: {
           'User-Agent': UA,
