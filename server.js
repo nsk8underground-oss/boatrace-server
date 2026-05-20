@@ -309,7 +309,20 @@ app.get('/api/debug', async (req, res) => {
   }
 });
 
-// AI予想エンドポイント（Gemini 2.0 Flash）
+// 利用可能モデル一覧（診断用）
+app.get('/api/list-models', async (req, res) => {
+  if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY未設定' });
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
+    const d = await r.json();
+    const names = (d.models || []).map(m => m.name);
+    res.json({ models: names, raw_error: d.error });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// AI予想エンドポイント（Gemini）
 app.post('/api/predict', async (req, res) => {
   if (!GEMINI_API_KEY) {
     return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
@@ -317,7 +330,7 @@ app.post('/api/predict', async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: 'promptが必要です' });
   try {
-    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25000);
     const response = await fetch(url, {
