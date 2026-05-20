@@ -214,6 +214,31 @@ function parseOdds1t(html) {
   return { odds, fetchedAt: new Date().toISOString() };
 }
 
+function parseOdds3t(html) {
+  const $ = cheerio.load(html);
+  const odds = {};
+  const boats = [1, 2, 3, 4, 5, 6];
+  let curFirst = 0;
+  $('tbody tr').each((_, tr) => {
+    const cells = $(tr).find('td').toArray();
+    if (!cells.length) return;
+    let ci = 0;
+    const fc = $(cells[0]);
+    const fcVal = parseInt(fc.text().trim());
+    if (fc.attr('rowspan') && fcVal >= 1 && fcVal <= 6) { curFirst = fcVal; ci = 1; }
+    if (!curFirst) return;
+    const scVal = parseInt($(cells[ci])?.text().trim());
+    if (!scVal || scVal < 1 || scVal > 6 || scVal === curFirst) return;
+    ci++;
+    boats.filter(b => b !== curFirst && b !== scVal).forEach(third => {
+      const v = parseFloat($(cells[ci])?.text().trim());
+      if (!isNaN(v) && v > 0) odds[`${curFirst}-${scVal}-${third}`] = v;
+      ci++;
+    });
+  });
+  return { odds };
+}
+
 app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 app.get('/api/venues', (_, res) => res.json(Object.entries(VENUES).map(([jcd, name]) => ({ jcd, name }))));
 
@@ -225,6 +250,19 @@ app.get('/api/before', async (req, res) => {
     const html = await fetchHtml(`${BASE}/beforeinfo?jcd=${jcd}&hd=${hd}&rno=${rno}`);
     if (!html) return res.json({ weather: {}, exhibit: {} });
     res.json(parseBeforeinfo(html));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/odds3t', async (req, res) => {
+  const { jcd, hd, rno = '1' } = req.query;
+  const err = validateParams(jcd, hd);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const html = await fetchHtml(`${BASE}/odds3t?jcd=${jcd}&hd=${hd}&rno=${rno}`);
+    if (!html) return res.json({ odds: {} });
+    res.json(parseOdds3t(html));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
