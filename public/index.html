@@ -163,12 +163,20 @@ input,select{font-family:var(--sans);}
 .ai-text{font-size:12px;line-height:1.85;color:var(--text);}
 .ai-text.loading{color:var(--muted);animation:blink 1s ease-in-out infinite;}
 @keyframes blink{0%,100%{opacity:1;}50%{opacity:0.3;}}
-.pred-scroll{display:flex;gap:8px;padding:0 14px 8px;overflow-x:auto;scrollbar-width:none;}
+.pred-section{margin:0 14px 4px;display:flex;align-items:center;gap:8px;}
+.pred-section-lbl{font-size:10px;font-weight:700;font-family:var(--mono);letter-spacing:0.08em;padding:3px 8px;border-radius:4px;}
+.pred-section-lbl.matoi{background:rgba(0,200,140,0.15);color:var(--accent2);border:1px solid rgba(0,200,140,0.3);}
+.pred-section-lbl.ana{background:rgba(245,193,24,0.12);color:var(--gold);border:1px solid rgba(245,193,24,0.3);}
+.pred-section-sub{font-size:9px;color:var(--muted);}
+.pred-scroll{display:flex;gap:8px;padding:0 14px 10px;overflow-x:auto;scrollbar-width:none;}
 .pred-scroll::-webkit-scrollbar{display:none;}
-.pred-chip{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:110px;}
-.pred-chip.main{border-color:rgba(245,193,24,0.5);}
+.pred-chip{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:100px;}
+.pred-chip.matoi{border-color:rgba(0,200,140,0.35);}
+.pred-chip.matoi .pc-val{color:var(--accent2);}
+.pred-chip.ana{border-color:rgba(245,193,24,0.35);}
+.pred-chip.ana .pc-val{color:var(--gold);}
 .pc-type{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:4px;}
-.pc-val{font-size:18px;font-weight:700;font-family:var(--mono);color:var(--gold);}
+.pc-val{font-size:18px;font-weight:700;font-family:var(--mono);}
 .pc-note{font-size:10px;color:var(--muted);margin-top:2px;}
 .eff-cards{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 14px 8px;}
 .eff-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
@@ -291,7 +299,7 @@ input,select{font-family:var(--sans);}
   <div class="page" id="page-predict">
     <div class="sec">AI予想</div>
     <div class="fixed-bar none" id="fixedBar">
-      <span id="fixedTxt" style="font-size:13px;font-weight:500">1着固定：未設定（出走表で設定）</span>
+      <span id="fixedTxt" style="font-size:13px;font-weight:500">1着固定：未設定（任意）</span>
     </div>
     <button class="pb-main" id="predictBtn" onclick="runPredict()">⚡ AI予想を生成</button>
     <div class="ai-box" id="aiBox" style="display:none">
@@ -302,8 +310,17 @@ input,select{font-family:var(--sans);}
       <div class="ai-text" id="aiText"></div>
     </div>
     <div id="predCards" style="display:none">
-      <div class="sec">予想結果</div>
-      <div class="pred-scroll" id="predScroll"></div>
+      <div class="sec">予想結果 <span style="color:var(--muted);font-size:9px">— 三連単フォーメーション</span></div>
+      <div class="pred-section">
+        <div class="pred-section-lbl matoi">◎ 的中重視</div>
+        <div class="pred-section-sub">5点フォーメーション</div>
+      </div>
+      <div class="pred-scroll" id="predScrollMatoi"></div>
+      <div class="pred-section" style="margin-top:4px">
+        <div class="pred-section-lbl ana">★ 高配当穴予想</div>
+        <div class="pred-section-sub">5点フォーメーション</div>
+      </div>
+      <div class="pred-scroll" id="predScrollAna"></div>
       <div class="eff-cards" id="effCards"></div>
     </div>
     <div class="sec">出目リスト参照</div>
@@ -752,7 +769,7 @@ function updateFixedBar() {
     }
   } else {
     bar.className = 'fixed-bar none';
-    txt.textContent = '1着固定：未設定（出走表で設定）';
+    txt.textContent = '1着固定：未設定（任意）';
     document.getElementById('fixedClear')?.remove();
   }
 }
@@ -818,21 +835,24 @@ function buildStatsList(racers) {
 
 /* ======================== AI PREDICT ======================== */
 async function runPredict() {
-  const btn      = document.getElementById('predictBtn');
-  const aiBox    = document.getElementById('aiBox');
-  const aiText   = document.getElementById('aiText');
+  const btn       = document.getElementById('predictBtn');
+  const aiBox     = document.getElementById('aiBox');
+  const aiText    = document.getElementById('aiText');
   const predCards = document.getElementById('predCards');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> 解析中...';
-  aiBox.style.display    = 'block';
+  aiBox.style.display     = 'block';
   predCards.style.display = 'none';
   aiText.textContent = 'boatrace.jp の最新データ + 風況・潮位・モーター評価を解析中...';
   aiText.className = 'ai-text loading';
 
-  const racers  = raceData?.racers || [];
-  const wind    = document.getElementById('windDir').value;
-  const tide    = document.getElementById('tideType').value;
-  const fixLine = fixedFirst ? `\n【1着固定】${fixedFirst}号艇を1着に固定。三連単は全て${fixedFirst}-?-?の形式で。` : '';
+  const racers = raceData?.racers || [];
+  const wind   = document.getElementById('windDir').value;
+  const tide   = document.getElementById('tideType').value;
+
+  const fixLine = fixedFirst
+    ? `\n【1着固定】${fixedFirst}号艇を1着に固定。matoi・ana ともに全て${fixedFirst}-?-? の形式にすること。`
+    : '';
 
   const lines = racers.map(r => {
     const md = loadMotor(r.lane);
@@ -862,8 +882,20 @@ ${fixLine}
 【出走表（boatrace.jp 実データ）】
 ${lines}
 
-JSON形式のみ(バッククォート不要):
-{"analysis":"280文字以内の総合分析","wind_effect":"90文字","tide_effect":"90文字","motor_comment":"80文字","honmei":"${fixedFirst?fixedFirst+'-?-?':'?-?-?'}","taisho":"対抗2着艇番","sanren_list":["三連単1","三連単2","三連単3"],"focus":"注目艇番","focus_reason":"80文字"}`;
+以下のJSON形式のみで回答（バッククォート不要）:
+{
+  "analysis": "280文字以内の総合分析",
+  "wind_effect": "90文字以内",
+  "tide_effect": "90文字以内",
+  "motor_comment": "80文字以内",
+  "focus": "注目艇番号（数字のみ）",
+  "focus_reason": "80文字以内",
+  "matoi": ["的中重視①","的中重視②","的中重視③","的中重視④","的中重視⑤"],
+  "ana":   ["穴予想①","穴予想②","穴予想③","穴予想④","穴予想⑤"]
+}
+matoiは三連単の的中重視フォーメーション5点（堅い本命軸）、
+anaは高配当を狙う穴フォーメーション5点（オッズ100倍以上を意識）。
+全て "艇番-艇番-艇番" 形式（例: "1-2-3"）で記載。重複なし。`;
 
   try {
     const res  = await fetch('/api/predict', {
@@ -875,23 +907,32 @@ JSON形式のみ(バッククォート不要):
     if (!res.ok || data.error) throw new Error(data.error || 'APIエラー');
     const raw = data.content.map(c=>c.text||'').join('').replace(/```json|```/g,'').trim();
     const jm  = raw.match(/\{[\s\S]*\}/);
-    if (!jm) throw new Error('no json');
+    if (!jm) throw new Error('JSONが見つかりません');
     const r = JSON.parse(jm[0]);
+
     aiText.className = 'ai-text';
-    aiText.innerHTML = `<strong style="color:var(--accent2)">▶ AI予想レポート</strong><br><br>${r.analysis}<br><br>`+
+    aiText.innerHTML =
+      `<strong style="color:var(--accent2)">▶ AI予想レポート</strong><br><br>${r.analysis}<br><br>`+
       `<strong style="color:var(--gold)">注目: ${r.focus}号艇</strong> — ${r.focus_reason}`;
-    const sl = r.sanren_list || [r.honmei];
-    const chips = [
-      {t:'◎本命', v:r.honmei, main:true, note: fixedFirst?`${fixedFirst}号艇固定`:'最有力'},
-      ...sl.map((s,i) => ({t:i===0?'三連単①':i===1?'三連単②':'三連単③', v:s, main:i===0, note:i===0?'最有力':i===1?'対抗':'押さえ'}))
-    ];
-    document.getElementById('predScroll').innerHTML = chips.map(c =>
-      `<div class="pred-chip${c.main?' main':''}"><div class="pc-type">${c.t}</div><div class="pc-val">${c.v}</div><div class="pc-note">${c.note}</div></div>`
-    ).join('');
+
+    const matoiList = (r.matoi || []).slice(0, 5);
+    const anaList   = (r.ana   || []).slice(0, 5);
+
+    document.getElementById('predScrollMatoi').innerHTML =
+      matoiList.map((v, i) =>
+        `<div class="pred-chip matoi"><div class="pc-type">的中重視 ${['①','②','③','④','⑤'][i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'◎本命':i===1?'対抗':'押さえ'}</div></div>`
+      ).join('');
+
+    document.getElementById('predScrollAna').innerHTML =
+      anaList.map((v, i) =>
+        `<div class="pred-chip ana"><div class="pc-type">穴予想 ${['①','②','③','④','⑤'][i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'★本線穴':i===1?'穴対抗':'穴押さえ'}</div></div>`
+      ).join('');
+
     document.getElementById('effCards').innerHTML = `
       <div class="eff-card"><div class="eff-icon">💨</div><div class="eff-lbl">風況影響</div><div class="eff-text">${r.wind_effect}</div></div>
       <div class="eff-card"><div class="eff-icon">🌊</div><div class="eff-lbl">潮位影響</div><div class="eff-text">${r.tide_effect}</div></div>
       <div class="eff-card"><div class="eff-icon">⚙️</div><div class="eff-lbl">モーター</div><div class="eff-text">${r.motor_comment}</div></div>`;
+
     predCards.style.display = 'block';
   } catch (e) {
     aiText.className = 'ai-text';
