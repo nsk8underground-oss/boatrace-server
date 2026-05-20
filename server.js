@@ -8,8 +8,8 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
-const SITE_PASSWORD     = process.env.SITE_PASSWORD     || 'boatrace2026';
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const SITE_PASSWORD = process.env.SITE_PASSWORD || 'boatrace2026';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 // パスワード保護（全ページに適用）
 app.use(basicAuth({
@@ -292,29 +292,28 @@ app.get('/api/debug', async (req, res) => {
   }
 });
 
-// AI予想エンドポイント（APIキーをサーバー側で管理）
+// AI予想エンドポイント（Gemini 2.0 Flash）
 app.post('/api/predict', async (req, res) => {
-  if (!ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'サーバーに ANTHROPIC_API_KEY が設定されていません' });
+  if (!GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
   }
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: 'promptが必要です' });
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1200,
-        messages: [{ role: 'user', content: prompt }],
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 1200 },
       }),
     });
     const data = await response.json();
-    res.json(data);
+    if (data.error) return res.status(500).json({ error: data.error.message });
+    // Anthropic互換形式に正規化してフロントに返す
+    const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+    res.json({ content: [{ text }] });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
