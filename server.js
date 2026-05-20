@@ -343,13 +343,16 @@ app.post('/api/predict', async (req, res) => {
           maxOutputTokens: 1200,
           responseMimeType: 'application/json',
         },
+        thinkingConfig: { thinkingBudget: 0 },
       }),
       signal: controller.signal,
     });
     clearTimeout(timer);
     const data = await response.json();
     if (data.error) return res.status(500).json({ error: `Gemini: ${data.error.message}` });
-    const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+    const text = data.candidates?.[0]?.content?.parts
+      ?.filter(p => !p.thought)
+      .map(p => p.text || '').join('') || '';
     if (!text) return res.status(500).json({ error: 'Geminiから空のレスポンスが返りました' });
     // サーバー側でJSONを検証してフロントに返す
     try {
