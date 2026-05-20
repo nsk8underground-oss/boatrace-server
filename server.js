@@ -317,7 +317,7 @@ app.post('/api/predict', async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: 'promptが必要です' });
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25000);
     const response = await fetch(url, {
