@@ -7,6 +7,8 @@ const path         = require('path');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+const predictCache = new Map();
+
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'boatrace2026';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
@@ -215,6 +217,19 @@ function parseOdds1t(html) {
 app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 app.get('/api/venues', (_, res) => res.json(Object.entries(VENUES).map(([jcd, name]) => ({ jcd, name }))));
 
+app.get('/api/before', async (req, res) => {
+  const { jcd, hd, rno = '1' } = req.query;
+  const err = validateParams(jcd, hd);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const html = await fetchHtml(`${BASE}/beforeinfo?jcd=${jcd}&hd=${hd}&rno=${rno}`);
+    if (!html) return res.json({ weather: {}, exhibit: {} });
+    res.json(parseBeforeinfo(html));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/all', async (req, res) => {
   const { jcd, hd, rno = '1' } = req.query;
   const err = validateParams(jcd, hd);
@@ -327,8 +342,14 @@ app.post('/api/predict', async (req, res) => {
   if (!GEMINI_API_KEY) {
     return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
   }
-  const { prompt } = req.body;
+  const { prompt, cacheKey } = req.body;
   if (!prompt) return res.status(400).json({ error: 'promptが必要です' });
+
+  if (cacheKey) {
+    const hit = predictCache.get(cacheKey);
+    if (hit && Date.now() < hit.exp) return res.json({ ...hit.data, cached: true });
+  }
+
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
     const controller = new AbortController();
@@ -354,13 +375,17 @@ app.post('/api/predict', async (req, res) => {
       ?.filter(p => !p.thought)
       .map(p => p.text || '').join('') || '';
     if (!text) return res.status(500).json({ error: 'Geminiから空のレスポンスが返りました' });
-    // サーバー側でJSONを検証してフロントに返す
     try {
-      JSON.parse(text); // 検証のみ
+      JSON.parse(text);
     } catch {
       return res.status(500).json({ error: 'GeminiのレスポンスがJSON形式ではありません' });
     }
-    res.json({ content: [{ text }] });
+    const result = { content: [{ text }] };
+    if (cacheKey) {
+      for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
+      predictCache.set(cacheKey, { data: result, exp: Date.now() + 600000 });
+    }
+    res.json(result);
   } catch (e) {
     const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました(25秒)' : e.message;
     res.status(500).json({ error: msg });

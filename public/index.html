@@ -190,6 +190,17 @@ input,select{font-family:var(--sans);}
 .srv-dot.err{background:var(--red);}
 .srv-dot.checking{background:var(--muted);}
 .motor-info-badge{font-size:10px;color:var(--muted);font-family:var(--mono);background:rgba(255,255,255,0.04);padding:2px 7px;border-radius:3px;border:1px solid var(--border);}
+.odds-panel{background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin:0 14px 8px;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.op-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);letter-spacing:0.12em;flex-shrink:0;}
+.op-items{display:flex;gap:8px;flex-wrap:wrap;}
+.op-item{display:flex;flex-direction:column;align-items:center;gap:2px;}
+.op-boat{width:20px;height:20px;border-radius:50%;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;}
+.op-odds{font-size:11px;font-weight:700;font-family:var(--mono);}
+.op-fav{color:var(--gold);}.op-mid{color:var(--accent2);}.op-ana{color:var(--orange);}.op-big{color:var(--red);}
+.exhibit-btn{background:rgba(0,255,204,0.08);border:1px solid rgba(0,255,204,0.25);color:var(--accent2);font-size:10px;font-family:var(--mono);font-weight:700;padding:3px 9px;border-radius:4px;cursor:pointer;margin-left:auto;}
+.exhibit-btn:active{opacity:0.6;}
+.cache-tag{font-size:9px;font-family:var(--mono);background:rgba(0,180,255,0.1);color:var(--accent);border:1px solid rgba(0,180,255,0.25);padding:2px 7px;border-radius:3px;}
+.pc-odds{font-size:9px;font-family:var(--mono);margin-top:1px;}
 #toast{position:fixed;bottom:calc(var(--nav) + var(--safe-b) + 12px);left:50%;transform:translateX(-50%) translateY(20px);background:rgba(0,200,140,0.92);color:#041a10;font-size:12px;font-weight:700;padding:7px 16px;border-radius:20px;z-index:999;opacity:0;transition:all 0.25s;pointer-events:none;font-family:var(--mono);}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.45;}}
@@ -285,7 +296,7 @@ input,select{font-family:var(--sans);}
 
   <!-- ── PAGE 2: ENTRY ── -->
   <div class="page" id="page-entry">
-    <div class="sec">出走表 <span style="color:var(--accent2);font-size:9px">— boatrace.jp リアルタイム</span></div>
+    <div class="sec">出走表 <span style="color:var(--accent2);font-size:9px">— boatrace.jp リアルタイム</span><button class="exhibit-btn" id="beforeBtn" onclick="refreshBefore()">⟳ 展示タイム更新</button></div>
     <div id="entryList"></div>
   </div>
 
@@ -301,11 +312,16 @@ input,select{font-family:var(--sans);}
     <div class="fixed-bar none" id="fixedBar">
       <span id="fixedTxt" style="font-size:13px;font-weight:500">1着固定：未設定（任意）</span>
     </div>
+    <div class="odds-panel" id="oddsPanel" style="display:none">
+      <span class="op-lbl">単勝ODDS</span>
+      <div class="op-items" id="opItems"></div>
+    </div>
     <button class="pb-main" id="predictBtn" onclick="runPredict()">⚡ AI予想を生成</button>
     <div class="ai-box" id="aiBox" style="display:none">
       <div class="ai-hdr">
         <div class="ai-badge">AI</div>
         <div class="ai-lbl">PREDICTION ENGINE</div>
+        <span class="cache-tag" id="cacheTag" style="display:none">キャッシュ済み</span>
       </div>
       <div class="ai-text" id="aiText"></div>
     </div>
@@ -437,6 +453,27 @@ function loadPrefs() {
   if (p.tide) document.getElementById('tideType').value = p.tide;
 }
 
+/* ======================== ODDS PANEL ======================== */
+function buildOddsPanel() {
+  const panel = document.getElementById('oddsPanel');
+  const items = document.getElementById('opItems');
+  if (!raceData || !raceData.racers || raceData.racers.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  const bgList = ['#fff','#2020ff','#cc0000','#555','#aa8800','#006000'];
+  const fgList = ['#111','#fff','#fff','#fff','#fff','#fff'];
+  items.innerHTML = raceData.racers.map(r => {
+    const o = r.odds;
+    const cls = o == null ? '' : o < 3 ? 'op-fav' : o < 10 ? 'op-mid' : o < 30 ? 'op-ana' : 'op-big';
+    return `<div class="op-item">
+      <div class="op-boat" style="background:${bgList[r.lane-1]};color:${fgList[r.lane-1]}">${r.lane}</div>
+      <div class="op-odds ${cls}">${o != null ? o.toFixed(1) : '—'}</div>
+    </div>`;
+  }).join('');
+  panel.style.display = 'flex';
+}
+
 /* ======================== SERVER CHECK ======================== */
 async function checkServer() {
   const dot = document.getElementById('srvDot');
@@ -490,6 +527,7 @@ async function fetchAllData() {
     updateAdvice();
     document.getElementById('aiBox').style.display    = 'none';
     document.getElementById('predCards').style.display = 'none';
+    buildOddsPanel();
     showToast('✅ データ取得完了');
   } catch (e) {
     showError('取得エラー: ' + e.message + '（時間をおいて再試行してください）');
@@ -520,11 +558,44 @@ async function fetchRace(rno) {
     updateWeather(data.weather);
     buildEntryList(data.racers);
     buildStatsList(data.racers);
+    buildOddsPanel();
   } catch (e) {
     showError('取得エラー: ' + e.message);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="r-icon">↻</i> 取得';
+  }
+}
+
+/* ======================== EXHIBIT REFRESH ======================== */
+async function refreshBefore() {
+  const btn = document.getElementById('beforeBtn');
+  if (!raceData) { alert('先にレースデータを取得してください'); return; }
+  const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
+  btn.disabled = true;
+  btn.textContent = '更新中...';
+  try {
+    const res  = await fetch(`${SERVER_URL}/api/before?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    let updated = 0;
+    raceData.racers = raceData.racers.map(r => {
+      const ex = data.exhibit?.[r.lane];
+      if (ex) {
+        if (ex.exhibitTime != null) { r.exhibitTime = ex.exhibitTime; updated++; }
+        if (ex.st         != null)   r.exhibitST   = ex.st;
+      }
+      return r;
+    });
+    if (data.weather) updateWeather(data.weather);
+    buildEntryList(raceData.racers);
+    buildStatsList(raceData.racers);
+    showToast(updated > 0 ? `✅ 展示タイム ${updated}艇更新` : '展示データ未公開');
+  } catch (e) {
+    showToast('⚠ 展示取得失敗: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⟳ 展示タイム更新';
   }
 }
 
@@ -850,6 +921,8 @@ async function runPredict() {
   aiText.textContent = 'Gemini AI がレースデータを解析中...';
   aiText.className = 'ai-text loading';
 
+  const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
+  const cacheKey = `${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}`;
   const racers = raceData?.racers || [];
   const wind   = document.getElementById('windDir').value;
   const tide   = document.getElementById('tideType').value;
@@ -905,10 +978,11 @@ anaは高配当を狙う穴フォーメーション5点（オッズ100倍以上�
     const res  = await fetch('/api/predict', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, cacheKey }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'APIエラー');
+    document.getElementById('cacheTag').style.display = data.cached ? 'inline' : 'none';
     const raw = data.content.map(c=>c.text||'').join('').replace(/```json|```/g,'').trim();
     const jm  = raw.match(/\{[\s\S]*\}/);
     if (!jm) throw new Error('JSONが見つかりません');
@@ -921,15 +995,22 @@ anaは高配当を狙う穴フォーメーション5点（オッズ100倍以上�
 
     const matoiList = (r.matoi || []).slice(0, 5);
     const anaList   = (r.ana   || []).slice(0, 5);
+    const oddsMap   = Object.fromEntries((raceData?.racers||[]).map(x => [x.lane, x.odds]));
+
+    function chipOdds(combo) {
+      const first = parseInt((combo||'').split('-')[0]);
+      const o = oddsMap[first];
+      return o != null ? `<div class="pc-odds" style="color:${o<3?'var(--gold)':o<10?'var(--accent2)':o<30?'var(--orange)':'var(--red)'}">${first}号 ${o.toFixed(1)}倍</div>` : '';
+    }
 
     document.getElementById('predScrollMatoi').innerHTML =
       matoiList.map((v, i) =>
-        `<div class="pred-chip matoi"><div class="pc-type">的中重視 ${['①','②','③','④','⑤'][i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'◎本命':i===1?'対抗':'押さえ'}</div></div>`
+        `<div class="pred-chip matoi"><div class="pc-type">的中重視 ${['①','②','③','④','⑤'][i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'◎本命':i===1?'対抗':'押さえ'}</div>${chipOdds(v)}</div>`
       ).join('');
 
     document.getElementById('predScrollAna').innerHTML =
       anaList.map((v, i) =>
-        `<div class="pred-chip ana"><div class="pc-type">穴予想 ${['①','②','③','④','⑤'][i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'★本線穴':i===1?'穴対抗':'穴押さえ'}</div></div>`
+        `<div class="pred-chip ana"><div class="pc-type">穴予想 ${['①','②','③','④','⑤'][i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'★本線穴':i===1?'穴対抗':'穴押さえ'}</div>${chipOdds(v)}</div>`
       ).join('');
 
     document.getElementById('effCards').innerHTML = `
@@ -952,6 +1033,7 @@ function showPage(name, btn) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
   btn.classList.add('active');
+  if (name === 'predict') buildOddsPanel();
 }
 
 /* ======================== CLOCK ======================== */
