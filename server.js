@@ -242,17 +242,19 @@ app.get('/api/all', async (req, res) => {
 });
 
 app.get('/api/ping-boatrace', async (req, res) => {
+  const timeout = parseInt(req.query.timeout) || 20000;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
+    const timer = setTimeout(() => controller.abort(), timeout);
+    const start = Date.now();
     const r = await fetch('https://www.boatrace.jp/owpc/pc/race/racelist?jcd=04&hd=20260520&rno=1', {
       headers: { 'User-Agent': UA },
       signal: controller.signal,
     });
     clearTimeout(timer);
-    res.json({ status: r.status, ok: r.ok, reachable: true });
+    res.json({ status: r.status, ok: r.ok, reachable: true, ms: Date.now() - start });
   } catch (e) {
-    res.json({ reachable: false, error: e.message });
+    res.json({ reachable: false, error: e.message, timeout_ms: timeout });
   }
 });
 
