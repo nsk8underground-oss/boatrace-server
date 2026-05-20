@@ -3,7 +3,6 @@ const cheerio      = require('cheerio');
 const cors         = require('cors');
 const basicAuth    = require('express-basic-auth');
 const path         = require('path');
-const fetch        = (...a) => import('node-fetch').then(({ default: f }) => f(...a));
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -35,13 +34,23 @@ const UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrom
 async function fetchHtml(url, retries = 3) {
   for (let i = 0; i <= retries; i++) {
     try {
-      const res = await fetch(url, { headers: { 'User-Agent': UA, 'Accept-Language': 'ja,en;q=0.9' } });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': UA,
+          'Accept-Language': 'ja,en;q=0.9',
+          'Accept': 'text/html',
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
       if (res.status === 404) return null;
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.text();
     } catch (e) {
       if (i === retries) throw e;
-      await new Promise(r => setTimeout(r, 800 * (i + 1)));
+      await new Promise(r => setTimeout(r, 500 * (i + 1)));
     }
   }
 }
