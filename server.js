@@ -241,6 +241,21 @@ app.get('/api/all', async (req, res) => {
   }
 });
 
+app.get('/api/ping-boatrace', async (req, res) => {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const r = await fetch('https://www.boatrace.jp/owpc/pc/race/racelist?jcd=04&hd=20260520&rno=1', {
+      headers: { 'User-Agent': UA },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    res.json({ status: r.status, ok: r.ok, reachable: true });
+  } catch (e) {
+    res.json({ reachable: false, error: e.message });
+  }
+});
+
 app.get('/api/debug', async (req, res) => {
   const { jcd = '21', hd = '20260519', rno = '1' } = req.query;
   try {
