@@ -441,8 +441,10 @@ function loadPrefs() {
 async function checkServer() {
   const dot = document.getElementById('srvDot');
   const txt = document.getElementById('srvTxt');
+  dot.className = 'srv-dot checking';
+  txt.textContent = '接続確認中...';
   try {
-    const res = await fetch(`${SERVER_URL}/api/health`, { signal: AbortSignal.timeout(12000) });
+    const res = await fetch(`${SERVER_URL}/api/health`, { signal: AbortSignal.timeout(20000) });
     if (res.ok) {
       serverOk = true;
       dot.className = 'srv-dot ok';
@@ -450,9 +452,10 @@ async function checkServer() {
       return true;
     }
   } catch {}
+  // ステータス表示は更新するが、データ取得はブロックしない
   serverOk = false;
   dot.className = 'srv-dot err';
-  txt.textContent = 'サーバー未起動';
+  txt.textContent = '接続エラー（取得は可能）';
   return false;
 }
 
@@ -463,23 +466,22 @@ async function fetchAllData() {
   if (!dateStr || dateStr.length !== 8) return alert('日付を選択してください');
   if (!VENUE_JCD) return alert('場所を選択してください');
 
-  if (!serverOk) {
-    const ok = await checkServer();
-    if (!ok) { showServerError(); return; }
-  }
-
+  // serverOk チェックを廃止 — 直接取得を試みてエラーで判断する
   btn.disabled = true;
   btn.innerHTML = '<i class="spin">↻</i> 取得中...';
   showLoading(document.getElementById('raceStateBox'));
 
   try {
     const url  = `${SERVER_URL}/api/all?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`;
-    const res  = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    const res  = await fetch(url, { signal: AbortSignal.timeout(35000) });
     const data = await res.json();
 
     if (!res.ok || data.error) { showError(data.error || 'データ取得に失敗しました'); return; }
 
     raceData = data;
+    serverOk = true;
+    document.getElementById('srvDot').className = 'srv-dot ok';
+    document.getElementById('srvTxt').textContent = 'サーバー接続済み';
     document.getElementById('raceStateBox').innerHTML = '';
     buildRaceChips(data.schedule);
     updateWeather(data.weather);
@@ -490,7 +492,7 @@ async function fetchAllData() {
     document.getElementById('predCards').style.display = 'none';
     showToast('✅ データ取得完了');
   } catch (e) {
-    showError('通信エラー: ' + e.message);
+    showError('取得エラー: ' + e.message + '（時間をおいて再試行してください）');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="r-icon">↻</i> 取得';
@@ -498,7 +500,6 @@ async function fetchAllData() {
 }
 
 async function fetchRace(rno) {
-  if (!serverOk) return;
   const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
   if (!dateStr) return;
 
@@ -511,7 +512,7 @@ async function fetchRace(rno) {
 
   try {
     const url  = `${SERVER_URL}/api/all?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${rno}`;
-    const res  = await fetch(url);
+    const res  = await fetch(url, { signal: AbortSignal.timeout(35000) });
     const data = await res.json();
     if (!res.ok || data.error) { showError(data.error || 'エラー'); return; }
     raceData = data;
@@ -520,7 +521,7 @@ async function fetchRace(rno) {
     buildEntryList(data.racers);
     buildStatsList(data.racers);
   } catch (e) {
-    showError('通信エラー: ' + e.message);
+    showError('取得エラー: ' + e.message);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="r-icon">↻</i> 取得';
@@ -541,10 +542,9 @@ function showError(msg) {
 function showServerError() {
   document.getElementById('raceStateBox').innerHTML = `
     <div class="state-box err">
-      <div class="state-title" style="color:var(--red)">🔴 サーバー未起動</div>
-      <div class="state-sub" style="text-align:left;margin-top:8px">
-        ターミナルで以下を実行してください：<br><br>
-        <code>cd C:\\boatrace &amp;&amp; node server.js</code>
+      <div class="state-title" style="color:var(--red)">⚠ 接続エラー</div>
+      <div class="state-sub" style="margin-top:8px">
+        サーバーへの接続に失敗しました。<br>時間をおいて「取得」ボタンを押してください。
       </div>
     </div>`;
 }
