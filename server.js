@@ -338,7 +338,11 @@ app.post('/api/predict', async (req, res) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 1200 },
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 1200,
+          responseMimeType: 'application/json',
+        },
       }),
       signal: controller.signal,
     });
@@ -347,6 +351,12 @@ app.post('/api/predict', async (req, res) => {
     if (data.error) return res.status(500).json({ error: `Gemini: ${data.error.message}` });
     const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
     if (!text) return res.status(500).json({ error: 'Geminiから空のレスポンスが返りました' });
+    // サーバー側でJSONを検証してフロントに返す
+    try {
+      JSON.parse(text); // 検証のみ
+    } catch {
+      return res.status(500).json({ error: 'GeminiのレスポンスがJSON形式ではありません' });
+    }
     res.json({ content: [{ text }] });
   } catch (e) {
     const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました(25秒)' : e.message;
