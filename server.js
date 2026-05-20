@@ -318,6 +318,8 @@ app.post('/api/predict', async (req, res) => {
   if (!prompt) return res.status(400).json({ error: 'promptが必要です' });
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -325,14 +327,17 @@ app.post('/api/predict', async (req, res) => {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.7, maxOutputTokens: 1200 },
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timer);
     const data = await response.json();
-    if (data.error) return res.status(500).json({ error: data.error.message });
-    // Anthropic互換形式に正規化してフロントに返す
+    if (data.error) return res.status(500).json({ error: `Gemini: ${data.error.message}` });
     const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+    if (!text) return res.status(500).json({ error: 'Geminiから空のレスポンスが返りました' });
     res.json({ content: [{ text }] });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました(25秒)' : e.message;
+    res.status(500).json({ error: msg });
   }
 });
 

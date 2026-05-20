@@ -442,7 +442,7 @@ async function checkServer() {
   const dot = document.getElementById('srvDot');
   const txt = document.getElementById('srvTxt');
   try {
-    const res = await fetch(`${SERVER_URL}/api/health`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${SERVER_URL}/api/health`, { signal: AbortSignal.timeout(12000) });
     if (res.ok) {
       serverOk = true;
       dot.className = 'srv-dot ok';
@@ -474,7 +474,7 @@ async function fetchAllData() {
 
   try {
     const url  = `${SERVER_URL}/api/all?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`;
-    const res  = await fetch(url);
+    const res  = await fetch(url, { signal: AbortSignal.timeout(30000) });
     const data = await res.json();
 
     if (!res.ok || data.error) { showError(data.error || 'データ取得に失敗しました'); return; }
@@ -835,6 +835,10 @@ function buildStatsList(racers) {
 
 /* ======================== AI PREDICT ======================== */
 async function runPredict() {
+  if (!raceData || !raceData.racers || raceData.racers.length === 0) {
+    alert('先にレースデータを取得してください（↻ 取得ボタン）');
+    return;
+  }
   const btn       = document.getElementById('predictBtn');
   const aiBox     = document.getElementById('aiBox');
   const aiText    = document.getElementById('aiText');
@@ -843,7 +847,7 @@ async function runPredict() {
   btn.innerHTML = '<span class="spinner"></span> 解析中...';
   aiBox.style.display     = 'block';
   predCards.style.display = 'none';
-  aiText.textContent = 'boatrace.jp の最新データ + 風況・潮位・モーター評価を解析中...';
+  aiText.textContent = 'Gemini AI がレースデータを解析中...';
   aiText.className = 'ai-text loading';
 
   const racers = raceData?.racers || [];
