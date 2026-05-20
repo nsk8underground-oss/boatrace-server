@@ -342,8 +342,8 @@ app.post('/api/predict', async (req, res) => {
           temperature: 0.7,
           maxOutputTokens: 1200,
           responseMimeType: 'application/json',
+          thinkingConfig: { thinkingBudget: 0 },
         },
-        thinkingConfig: { thinkingBudget: 0 },
       }),
       signal: controller.signal,
     });
