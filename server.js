@@ -368,6 +368,51 @@ app.get('/api/odds3t', async (req, res) => {
   }
 });
 
+function parseRaceResult(html) {
+  const $ = cheerio.load(html);
+  const order = [];
+  const payouts = [];
+  const PAYOUT_TYPES = ['3連単','3連複','2連単','2連複','拡連複','単勝','複勝'];
+
+  $('tbody tr').each((_, tr) => {
+    const cells = $(tr).find('td');
+    if (!cells.length) return;
+    const t0 = cells.eq(0).text().trim();
+
+    // Finishing order rows: "1" or "1着"
+    const rankM = t0.match(/^(\d)着?$/);
+    if (rankM) {
+      const rank = parseInt(rankM[1]);
+      const lane = parseInt(cells.eq(1).text().replace(/\s+/g,''));
+      if (rank >= 1 && rank <= 6 && lane >= 1 && lane <= 6) order.push({ rank, lane });
+      return;
+    }
+
+    // Payout rows
+    if (PAYOUT_TYPES.includes(t0)) {
+      const combo = cells.eq(1).text().replace(/\s+/g,'');
+      const payRaw = cells.eq(2).text().replace(/[,¥円\s]/g,'');
+      const pay = parseInt(payRaw);
+      if (combo && !isNaN(pay)) payouts.push({ type: t0, combo, pay });
+    }
+  });
+
+  return { order, payouts, fetchedAt: new Date().toISOString() };
+}
+
+app.get('/api/result', async (req, res) => {
+  const { jcd, hd, rno = '1' } = req.query;
+  const err = validateParams(jcd, hd);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const html = await fetchHtml(`${BASE}/raceresult?jcd=${jcd}&hd=${hd}&rno=${rno}`);
+    if (!html) return res.json({ order: [], payouts: [] });
+    res.json(parseRaceResult(html));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/all', async (req, res) => {
   const { jcd, hd, rno = '1' } = req.query;
   const err = validateParams(jcd, hd);
