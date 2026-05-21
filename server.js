@@ -10,6 +10,20 @@ const PORT = process.env.PORT || 3000;
 const predictCache = new Map();
 const raceCache    = new Map();
 
+const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+async function redisCmd(...args) {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  const r = await fetch(UPSTASH_URL, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+  const d = await r.json();
+  return d.result ?? null;
+}
+
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'boatrace2026';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
@@ -408,6 +422,53 @@ app.get('/api/result', async (req, res) => {
     const html = await fetchHtml(`${BASE}/raceresult?jcd=${jcd}&hd=${hd}&rno=${rno}`);
     if (!html) return res.json({ order: [], payouts: [] });
     res.json(parseRaceResult(html));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ======================== SHARED MOTORS ======================== */
+app.get('/api/motors', async (req, res) => {
+  const { jcd } = req.query;
+  if (!jcd) return res.status(400).json({ error: 'jcd required' });
+  try {
+    const raw = await redisCmd('HGETALL', `motors:${jcd}`);
+    if (!raw) return res.json({});
+    const result = {};
+    // HGETALL returns alternating [key, val, ...] array
+    if (Array.isArray(raw)) {
+      for (let i = 0; i < raw.length; i += 2) {
+        try { result[raw[i]] = JSON.parse(raw[i + 1]); } catch { result[raw[i]] = raw[i + 1]; }
+      }
+    } else if (raw && typeof raw === 'object') {
+      for (const [k, v] of Object.entries(raw)) {
+        try { result[k] = JSON.parse(v); } catch { result[k] = v; }
+      }
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/motors', async (req, res) => {
+  const { jcd, motorNo, grade, note, racerName, motor2Rate } = req.body;
+  if (!jcd || !motorNo) return res.status(400).json({ error: 'jcd and motorNo required' });
+  try {
+    const val = JSON.stringify({ grade: grade || '', note: note || '', racerName: racerName || '', motor2Rate: motor2Rate || null, updatedAt: new Date().toISOString() });
+    await redisCmd('HSET', `motors:${jcd}`, String(motorNo), val);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/motors', async (req, res) => {
+  const { jcd, motorNo } = req.body;
+  if (!jcd || !motorNo) return res.status(400).json({ error: 'jcd and motorNo required' });
+  try {
+    await redisCmd('HDEL', `motors:${jcd}`, String(motorNo));
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
