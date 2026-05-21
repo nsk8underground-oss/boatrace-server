@@ -194,25 +194,56 @@ function parseRacelist(html, jcd, hd, rno) {
 function parseBeforeinfo(html) {
   const $ = cheerio.load(html);
   const weather = {};
+
+  // 天候: テーブルセル形式（隣接td）とテキスト形式の両方に対応
+  $('td, th').each((_, el) => {
+    const label = $(el).text().trim();
+    const val   = $(el).next('td').text().trim();
+    if (label === '天候' && val) weather.sky = val;
+    if (label === '風速' && val) weather.wind = parseFloat(val) || 0;
+    if (label === '風向' && val) weather.windDir = val;
+    if (label === '水温' && val) weather.water = parseFloat(val) || 0;
+    if (label === '波高' && val) weather.wave  = parseFloat(val) || 0;
+  });
+  // フォールバック: コロン区切りテキスト形式
   const bodyText = $.text();
-  weather.sky     = (bodyText.match(/天候\s*[:：]\s*(\S+)/) || [])[1] || '';
-  weather.wind    = parseFloat((bodyText.match(/風速\s*[:：]\s*([\d.]+)/) || [])[1]) || 0;
-  weather.windDir = (bodyText.match(/風向\s*[:：]\s*(\S+)/) || [])[1] || '';
-  weather.water   = parseFloat((bodyText.match(/水温\s*[:：]\s*([\d.]+)/) || [])[1]) || 0;
-  weather.wave    = parseFloat((bodyText.match(/波高\s*[:：]\s*([\d.]+)/) || [])[1]) || 0;
+  if (!weather.sky)     weather.sky     = (bodyText.match(/天候\s*[:：]?\s*([晴曇雨雪][^\s\d]*)/) || [])[1] || '';
+  if (!weather.wind)    weather.wind    = parseFloat((bodyText.match(/風速\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
+  if (!weather.windDir) weather.windDir = (bodyText.match(/風向\s*[:：]?\s*([北南東西][^\s\d]{0,4})/) || [])[1] || '';
+  if (!weather.water)   weather.water   = parseFloat((bodyText.match(/水温\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
+  if (!weather.wave)    weather.wave    = parseFloat((bodyText.match(/波高\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
+
   const exhibitMap = {};
-  $('tbody tr').each((_, tr) => {
+  $('tr').each((_, tr) => {
     const cells = $(tr).find('td');
     if (cells.length < 4) return;
-    const lane = parseInt(cells.eq(0).text().trim());
+
+    const c0 = cells.eq(0).text().trim();
+    const lane = parseInt(c0);
     if (isNaN(lane) || lane < 1 || lane > 6) return;
-    exhibitMap[lane] = {
-      lane,
-      course: parseInt(cells.eq(1).text().trim()) || lane,
-      exhibitTime: parseFloat(cells.eq(2).text().trim()) || null,
-      st: parseFloat(cells.eq(3).text().trim()) || null,
-    };
+
+    // 列構成を自動検出:
+    //   4列: 艇番|進入|タイム|ST        → indices 0,1,2,3
+    //   5列以上: 艇番|選手名|進入|タイム|ST → indices 0,2,3,4
+    let courseIdx = 1, timeIdx = 2, stIdx = 3;
+    if (cells.length >= 5) {
+      const c1 = cells.eq(1).text().replace(/\s+/g, '').trim();
+      // c1が数字1桁（コース番号）でなければ選手名列とみなす
+      if (!/^\d$/.test(c1)) {
+        courseIdx = 2; timeIdx = 3; stIdx = 4;
+      }
+    }
+
+    const course      = parseInt(cells.eq(courseIdx).text().trim()) || lane;
+    const exhibitTime = parseFloat(cells.eq(timeIdx).text().trim())  || null;
+    const st          = parseFloat(cells.eq(stIdx).text().trim())    || null;
+
+    // 有効な展示タイム（5〜8秒）が取れた行のみ採用
+    if (exhibitTime && exhibitTime > 5 && exhibitTime < 9) {
+      exhibitMap[lane] = { lane, course, exhibitTime, st };
+    }
   });
+
   return { weather, exhibit: exhibitMap, fetchedAt: new Date().toISOString() };
 }
 
@@ -584,6 +615,30 @@ app.get('/api/list-models', async (req, res) => {
     const d = await r.json();
     const names = (d.models || []).map(m => m.name);
     res.json({ models: names, raw_error: d.error });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/debug-before', async (req, res) => {
+  const { jcd = '04', hd, rno = '1' } = req.query;
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = hd || today;
+  try {
+    const html = await fetchHtml(`${BASE}/beforeinfo?jcd=${jcd}&hd=${date}&rno=${rno}`);
+    if (!html) return res.json({ error: 'HTML取得失敗' });
+    const $ = cheerio.load(html);
+    const rows = [];
+    $('tr').each((_, tr) => {
+      const cells = $(tr).find('td');
+      if (!cells.length) return;
+      const first = cells.first().text().trim();
+      if (['1','2','3','4','5','6'].includes(first)) {
+        rows.push({ cellCount: cells.length, cells: cells.map((_,td) => $(td).text().replace(/\s+/g,' ').trim().slice(0,20)).get().slice(0,7) });
+      }
+    });
+    const parsed = parseBeforeinfo(html);
+    res.json({ rows, parsed, htmlLen: html.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
