@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="32" fill="#07101d"/>
+  <rect x="8" y="8" width="176" height="176" rx="28" fill="none" stroke="#00b4ff" stroke-width="3" opacity="0.4"/>
+  <text x="96" y="115" font-size="96" text-anchor="middle" font-family="serif">🚤</text>
+  <text x="96" y="158" font-size="18" text-anchor="middle" fill="#00b4ff" font-family="monospace" font-weight="bold">BOATRACE</text>
+</svg>

@@ -239,8 +239,107 @@ function parseOdds3t(html) {
   return { odds };
 }
 
+function parseOdds2t(html) {
+  const $ = cheerio.load(html);
+  const odds = {};
+  let curFirst = 0;
+  $('tbody tr').each((_, tr) => {
+    const cells = $(tr).find('td').toArray();
+    if (!cells.length) return;
+    let ci = 0;
+    const fc = $(cells[0]);
+    const fcVal = parseInt(fc.text().trim());
+    if (fc.attr('rowspan') && fcVal >= 1 && fcVal <= 6) { curFirst = fcVal; ci = 1; }
+    if (!curFirst) return;
+    const scVal = parseInt($(cells[ci])?.text().trim());
+    if (!scVal || scVal < 1 || scVal > 6 || scVal === curFirst) return;
+    ci++;
+    const v = parseFloat($(cells[ci])?.text().trim());
+    if (!isNaN(v) && v > 0) odds[`${curFirst}-${scVal}`] = v;
+  });
+  return { odds };
+}
+
+function parseOdds3f(html) {
+  const $ = cheerio.load(html);
+  const odds = {};
+  $('tbody tr').each((_, tr) => {
+    const cells = $(tr).find('td').toArray();
+    if (cells.length < 2) return;
+    const boats = [];
+    let oddsVal = null;
+    cells.forEach(td => {
+      const raw = $(td).text().trim();
+      const nums = raw.replace(/[=×\s]/g, '').split('').map(Number).filter(n => n >= 1 && n <= 6);
+      if (nums.length >= 3) { nums.slice(0,3).forEach(n => boats.push(n)); return; }
+      const n = parseInt(raw);
+      const v = parseFloat(raw);
+      if (!isNaN(n) && n >= 1 && n <= 6 && boats.length < 3) boats.push(n);
+      else if (!isNaN(v) && v >= 1.0 && raw.includes('.')) oddsVal = v;
+    });
+    if (boats.length === 3 && oddsVal) odds[boats.slice().sort((a,b)=>a-b).join('-')] = oddsVal;
+  });
+  return { odds };
+}
+
 app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 app.get('/api/venues', (_, res) => res.json(Object.entries(VENUES).map(([jcd, name]) => ({ jcd, name }))));
+
+app.get('/api/today', async (req, res) => {
+  const jst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  const hd = `${jst.getFullYear()}${String(jst.getMonth()+1).padStart(2,'0')}${String(jst.getDate()).padStart(2,'0')}`;
+  try {
+    const html = await fetchHtml('https://www.boatrace.jp/owpc/pc/race/');
+    const $ = cheerio.load(html || '');
+    const found = new Map();
+    $('a[href*="jcd="]').each((_, el) => {
+      const m = ($(el).attr('href') || '').match(/jcd=(\d{2})/);
+      if (m && VENUES[m[1]] && !found.has(m[1])) found.set(m[1], VENUES[m[1]]);
+    });
+    res.json({ venues: [...found.entries()].map(([jcd,name])=>({jcd,name})), hd });
+  } catch (e) {
+    res.json({ venues: [], hd, error: e.message });
+  }
+});
+
+app.get('/api/odds', async (req, res) => {
+  const { jcd, hd, rno = '1' } = req.query;
+  const err = validateParams(jcd, hd);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const html = await fetchHtml(`${BASE}/odds1t?jcd=${jcd}&hd=${hd}&rno=${rno}`);
+    if (!html) return res.json({ odds: {} });
+    res.json(parseOdds1t(html));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/odds2t', async (req, res) => {
+  const { jcd, hd, rno = '1' } = req.query;
+  const err = validateParams(jcd, hd);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const html = await fetchHtml(`${BASE}/odds2t?jcd=${jcd}&hd=${hd}&rno=${rno}`);
+    if (!html) return res.json({ odds: {} });
+    res.json(parseOdds2t(html));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/odds3f', async (req, res) => {
+  const { jcd, hd, rno = '1' } = req.query;
+  const err = validateParams(jcd, hd);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const html = await fetchHtml(`${BASE}/odds3f?jcd=${jcd}&hd=${hd}&rno=${rno}`);
+    if (!html) return res.json({ odds: {} });
+    res.json(parseOdds3f(html));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/api/before', async (req, res) => {
   const { jcd, hd, rno = '1' } = req.query;

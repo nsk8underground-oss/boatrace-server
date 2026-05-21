@@ -1,0 +1,12 @@
+{
+  "name": "ボートレース予想",
+  "short_name": "競艇予想",
+  "description": "ボートレース予想ダッシュボード",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07101d",
+  "theme_color": "#00b4ff",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

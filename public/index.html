@@ -4,7 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#00b4ff">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>ボートレース 予想</title>
+<script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});</script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+JP:wght@400;500;700&display=swap');
 :root{
@@ -35,7 +40,7 @@ input,select{font-family:var(--sans);}
 #content{position:fixed;top:var(--hdr);left:0;right:0;bottom:calc(var(--nav) + var(--safe-b));overflow:hidden;}
 .page{display:none;height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:12px;}
 .page.active{display:block;}
-#nav{position:fixed;bottom:0;left:0;right:0;height:calc(var(--nav) + var(--safe-b));background:var(--bg2);border-top:1px solid var(--border);display:grid;grid-template-columns:repeat(4,1fr);padding-bottom:var(--safe-b);}
+#nav{position:fixed;bottom:0;left:0;right:0;height:calc(var(--nav) + var(--safe-b));background:var(--bg2);border-top:1px solid var(--border);display:grid;grid-template-columns:repeat(5,1fr);padding-bottom:var(--safe-b);}
 .nav-btn{background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:6px 4px;color:var(--muted);}
 .nav-btn.active{color:var(--accent);}
 .nav-icon{font-size:20px;line-height:1;}
@@ -213,6 +218,33 @@ input,select{font-family:var(--sans);}
 .wx-ex-item{display:flex;flex-direction:column;align-items:center;font-size:11px;font-family:var(--mono);}
 .wx-ex-lane{width:18px;height:18px;border-radius:50%;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-bottom:2px;}
 .odds3t-val{font-size:9px;color:var(--gold);font-family:var(--mono);margin-top:2px;}
+.ref-odds-box{background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin:0 14px 8px;padding:10px 12px;}
+.ref-odds-title{font-size:10px;color:var(--muted);font-family:var(--mono);letter-spacing:0.1em;margin-bottom:6px;}
+.ref-odds-row{display:flex;flex-wrap:wrap;gap:5px;}
+.ref-chip{font-size:11px;font-family:var(--mono);background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:3px 7px;}
+.auto-odds-btn{background:rgba(255,140,48,0.08);border:1px solid rgba(255,140,48,0.25);color:var(--orange);font-size:10px;font-family:var(--mono);font-weight:700;padding:3px 9px;border-radius:4px;cursor:pointer;margin-left:8px;}
+.auto-odds-btn.on{background:rgba(255,140,48,0.2);border-color:var(--orange);}
+.hist-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 14px;}
+.hs-item{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 8px;text-align:center;}
+.hs-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:4px;}
+.hs-val{font-size:18px;font-weight:700;font-family:var(--mono);}
+.hist-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;overflow:hidden;}
+.hist-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 6px;}
+.hist-race{font-size:14px;font-weight:700;}
+.hist-date{font-size:11px;font-family:var(--mono);color:var(--muted);}
+.hist-result{font-size:11px;font-family:var(--mono);font-weight:700;padding:2px 8px;border-radius:3px;background:var(--bg3);color:var(--muted);}
+.hist-result.hit{background:rgba(0,255,204,0.12);color:var(--accent2);}
+.hist-result.miss{background:rgba(255,64,96,0.1);color:var(--red);}
+.hist-combos-row{display:flex;align-items:baseline;gap:8px;padding:2px 12px;}
+.hist-combo-txt{font-size:11px;font-family:var(--mono);color:var(--text);}
+.hist-bot{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--border);flex-wrap:wrap;}
+.hb-btn{background:var(--bg3);border:1px solid var(--border);color:var(--muted);font-size:11px;font-family:var(--mono);padding:4px 9px;border-radius:4px;cursor:pointer;}
+.hb-btn.hb-matoi.on{background:rgba(0,255,204,0.12);border-color:var(--accent2);color:var(--accent2);}
+.hb-btn.hb-ana.on{background:rgba(245,193,24,0.12);border-color:var(--gold);color:var(--gold);}
+.hb-btn.hb-none.on{background:rgba(255,64,96,0.1);border-color:var(--red);color:var(--red);}
+.hb-pay{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 7px;border-radius:4px;outline:none;width:72px;}
+.hb-del{background:none;border:1px solid rgba(255,64,96,0.2);color:var(--red);font-size:13px;padding:3px 8px;border-radius:4px;cursor:pointer;margin-left:auto;}
+.today-badge{font-size:9px;font-family:var(--mono);background:rgba(0,255,204,0.12);color:var(--accent2);border:1px solid rgba(0,255,204,0.3);padding:1px 5px;border-radius:3px;margin-left:4px;}
 #toast{position:fixed;bottom:calc(var(--nav) + var(--safe-b) + 12px);left:50%;transform:translateX(-50%) translateY(20px);background:rgba(0,200,140,0.92);color:#041a10;font-size:12px;font-weight:700;padding:7px 16px;border-radius:20px;z-index:999;opacity:0;transition:all 0.25s;pointer-events:none;font-family:var(--mono);}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.45;}}
@@ -309,7 +341,7 @@ input,select{font-family:var(--sans);}
 
   <!-- ── PAGE 2: ENTRY ── -->
   <div class="page" id="page-entry">
-    <div class="sec">出走表 <span style="color:var(--accent2);font-size:9px">— boatrace.jp リアルタイム</span><button class="exhibit-btn" id="beforeBtn" onclick="refreshBefore()">⟳ 展示タイム更新</button></div>
+    <div class="sec">出走表 <span style="color:var(--accent2);font-size:9px">— boatrace.jp リアルタイム</span><button class="exhibit-btn" id="beforeBtn" onclick="refreshBefore()">⟳ 展示更新</button><button class="auto-odds-btn" id="autoOddsBtn" onclick="toggleAutoOdds()">⏱ 自動更新</button></div>
     <div id="entryList"></div>
   </div>
 
@@ -353,10 +385,24 @@ input,select{font-family:var(--sans);}
       </div>
       <div class="pred-scroll" id="predScrollAna"></div>
       <div class="eff-cards" id="effCards"></div>
+      <div class="ref-odds-box" id="refOdds2t" style="display:none">
+        <div class="ref-odds-title">2連単オッズ（予想組合せ）</div>
+        <div class="ref-odds-row" id="refOdds2tRow"></div>
+      </div>
+      <div class="ref-odds-box" id="refOdds3f" style="display:none">
+        <div class="ref-odds-title">3連複オッズ（予想組合せ）</div>
+        <div class="ref-odds-row" id="refOdds3fRow"></div>
+      </div>
     </div>
     <div class="sec">出目リスト参照</div>
     <div class="dememe-scroll" id="dememe2"></div>
     <div style="height:8px"></div>
+  </div>
+
+  <!-- ── PAGE 5: HISTORY ── -->
+  <div class="page" id="page-history">
+    <div class="sec">予想履歴 <span style="color:var(--muted);font-size:9px">— 的中管理</span><button class="exhibit-btn" onclick="clearHistory()" style="margin-left:auto;border-color:rgba(255,64,96,0.3);color:var(--red)">全削除</button></div>
+    <div id="histList"></div>
   </div>
 
 </div>
@@ -364,8 +410,9 @@ input,select{font-family:var(--sans);}
 <nav id="nav">
   <button class="nav-btn active" onclick="showPage('race',this)"><span class="nav-icon">🏁</span><span class="nav-lbl">レース</span></button>
   <button class="nav-btn" onclick="showPage('entry',this)"><span class="nav-icon">📋</span><span class="nav-lbl">出走表</span></button>
-  <button class="nav-btn" onclick="showPage('stats',this)"><span class="nav-icon">📊</span><span class="nav-lbl">選手詳細</span></button>
+  <button class="nav-btn" onclick="showPage('stats',this)"><span class="nav-icon">📊</span><span class="nav-lbl">詳細</span></button>
   <button class="nav-btn" onclick="showPage('predict',this)"><span class="nav-icon">⚡</span><span class="nav-lbl">予想</span></button>
+  <button class="nav-btn" onclick="showPage('history',this)"><span class="nav-icon">📝</span><span class="nav-lbl">履歴</span></button>
 </nav>
 <div id="toast">💾 保存しました</div>
 
@@ -466,6 +513,106 @@ function loadPrefs() {
   if (!p) return;
   if (p.wind) document.getElementById('windDir').value = p.wind;
   if (p.tide) document.getElementById('tideType').value = p.tide;
+}
+
+/* ======================== HISTORY ======================== */
+const HIST_KEY = 'br_pred_history';
+function getHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch { return []; } }
+function saveToHistory(e) {
+  const h = getHistory(); h.unshift(e);
+  localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(0, 100)));
+}
+function updateHistEntry(id, upd) {
+  const h = getHistory().map(e => e.id === id ? { ...e, ...upd } : e);
+  localStorage.setItem(HIST_KEY, JSON.stringify(h));
+  buildHistory();
+}
+function markHit(id, type) { updateHistEntry(id, { hit: type }); }
+function setPayout(id, val) { updateHistEntry(id, { payout: parseInt(val) || 0 }); }
+function delHist(id) {
+  localStorage.setItem(HIST_KEY, JSON.stringify(getHistory().filter(e => e.id !== id)));
+  buildHistory();
+}
+function clearHistory() {
+  if (!confirm('履歴をすべて削除しますか？')) return;
+  localStorage.removeItem(HIST_KEY); buildHistory();
+}
+
+function buildHistory() {
+  const el = document.getElementById('histList');
+  if (!el) return;
+  const history = getHistory();
+  if (!history.length) {
+    el.innerHTML = '<div class="state-box"><div class="state-sub">予想履歴がありません。<br>「⚡ AI予想を生成」すると自動保存されます。</div></div>';
+    return;
+  }
+  const total = history.length;
+  const hit = history.filter(h => h.hit === 'matoi' || h.hit === 'ana').length;
+  const payout = history.reduce((s, h) => s + (h.payout || 0), 0);
+  const rate = total ? Math.round(hit / total * 100) : 0;
+  el.innerHTML = `
+    <div class="hist-stats">
+      <div class="hs-item"><div class="hs-lbl">総予想</div><div class="hs-val">${total}</div></div>
+      <div class="hs-item"><div class="hs-lbl">的中</div><div class="hs-val" style="color:var(--accent2)">${hit}</div></div>
+      <div class="hs-item"><div class="hs-lbl">的中率</div><div class="hs-val" style="color:var(--gold)">${rate}%</div></div>
+      <div class="hs-item"><div class="hs-lbl">総払戻</div><div class="hs-val" style="color:var(--orange)">¥${payout.toLocaleString()}</div></div>
+    </div>
+    ${history.map(h => {
+      const d = h.hd ? `${h.hd.slice(4,6)}/${h.hd.slice(6,8)}` : '';
+      const hitCls = h.hit === 'matoi' || h.hit === 'ana' ? 'hit' : h.hit === 'none' ? 'miss' : '';
+      const hitTxt = h.hit === 'matoi' ? '◎的中' : h.hit === 'ana' ? '★的中' : h.hit === 'none' ? '❌ハズレ' : '⊙未確認';
+      return `<div class="hist-card">
+        <div class="hist-hdr">
+          <div class="hist-race">${h.venue||'—'} ${h.rno}R</div>
+          <div class="hist-date">${d}</div>
+          <div class="hist-result ${hitCls}">${hitTxt}</div>
+        </div>
+        <div class="hist-combos-row"><span class="pred-section-lbl matoi" style="font-size:9px;padding:2px 6px;flex-shrink:0">的中重視</span><span class="hist-combo-txt">${(h.matoi||[]).join(' / ')}</span></div>
+        <div class="hist-combos-row" style="margin-top:3px"><span class="pred-section-lbl ana" style="font-size:9px;padding:2px 6px;flex-shrink:0">穴予想</span><span class="hist-combo-txt">${(h.ana||[]).join(' / ')}</span></div>
+        ${h.payout ? `<div style="font-size:11px;color:var(--gold);padding:4px 12px">払戻: ¥${(h.payout||0).toLocaleString()}</div>` : ''}
+        <div class="hist-bot">
+          <button class="hb-btn hb-matoi${h.hit==='matoi'?' on':''}" onclick="markHit(${h.id},'matoi')">◎的中</button>
+          <button class="hb-btn hb-ana${h.hit==='ana'?' on':''}" onclick="markHit(${h.id},'ana')">★的中</button>
+          <button class="hb-btn hb-none${h.hit==='none'?' on':''}" onclick="markHit(${h.id},'none')">ハズレ</button>
+          <input class="hb-pay" type="number" placeholder="払戻金額" value="${h.payout||''}" onchange="setPayout(${h.id},this.value)">
+          <button class="hb-del" onclick="delHist(${h.id})">×</button>
+        </div>
+      </div>`;
+    }).join('')}
+    <div style="height:8px"></div>`;
+}
+
+/* ======================== AUTO ODDS REFRESH ======================== */
+let oddsTimer = null;
+let autoOddsOn = false;
+
+function toggleAutoOdds() {
+  autoOddsOn = !autoOddsOn;
+  const btn = document.getElementById('autoOddsBtn');
+  if (autoOddsOn) {
+    btn.textContent = '⏱ 更新中(60s)'; btn.classList.add('on');
+    oddsTimer = setInterval(refreshOddsOnly, 60000);
+    showToast('オッズ自動更新 ON（60秒間隔）');
+  } else {
+    btn.textContent = '⏱ 自動更新'; btn.classList.remove('on');
+    clearInterval(oddsTimer); oddsTimer = null;
+    showToast('オッズ自動更新 OFF');
+  }
+}
+
+async function refreshOddsOnly() {
+  if (!raceData) return;
+  const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
+  try {
+    const res  = await fetch(`${SERVER_URL}/api/odds?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(15000) });
+    const data = await res.json();
+    if (!data.odds) return;
+    raceData.racers = raceData.racers.map(r => ({ ...r, odds: data.odds[r.lane] ?? r.odds }));
+    buildEntryList(raceData.racers);
+    buildMiniRacers(raceData.racers);
+    buildOddsPanel();
+    document.getElementById('srvTxt').textContent = `オッズ更新: ${new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})}`;
+  } catch {}
 }
 
 /* ======================== MINI RACER TABLE ======================== */
@@ -836,7 +983,7 @@ function buildEntryList(racers) {
 
     return `<div class="entry-card${isFixed?' fixed':''}" id="ec${r.lane}">
       <div class="entry-top">
-        <div class="lane-col l${r.lane}">${r.lane}</div>
+        <div class="lane-col l${r.lane}">${r.lane}${r.course && r.course !== r.lane ? `<div style="font-size:8px;opacity:0.7;margin-top:1px">${r.course}コ</div>` : ''}</div>
         <div class="entry-main">
           <div class="entry-row1">
             <span class="entry-name">${r.name||'—'}</span>
@@ -1058,22 +1205,24 @@ anaは高配当を狙う穴フォーメーション5点（オッズ100倍以上�
 
   try {
     const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
-    const [predictResp, odds3tResp] = await Promise.allSettled([
+    const [predictResp, odds3tResp, odds2tResp, odds3fResp] = await Promise.allSettled([
       fetch('/api/predict', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, cacheKey }),
       }),
       fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
+      fetch(`${SERVER_URL}/api/odds2t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
+      fetch(`${SERVER_URL}/api/odds3f?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
     ]);
     if (predictResp.status === 'rejected') throw new Error(predictResp.reason?.message || 'APIエラー');
     const data = await predictResp.value.json();
     if (!predictResp.value.ok || data.error) throw new Error(data.error || 'APIエラー');
     document.getElementById('cacheTag').style.display = data.cached ? 'inline' : 'none';
-    let odds3t = {};
-    if (odds3tResp.status === 'fulfilled') {
-      try { const od = await odds3tResp.value.json(); odds3t = od.odds || {}; } catch {}
-    }
+    let odds3t = {}, odds2t = {}, odds3f = {};
+    if (odds3tResp.status === 'fulfilled') { try { odds3t = (await odds3tResp.value.json()).odds || {}; } catch {} }
+    if (odds2tResp.status === 'fulfilled') { try { odds2t = (await odds2tResp.value.json()).odds || {}; } catch {} }
+    if (odds3fResp.status === 'fulfilled') { try { odds3f = (await odds3fResp.value.json()).odds || {}; } catch {} }
     const raw = data.content.map(c=>c.text||'').join('').replace(/```json|```/g,'').trim();
     const jm  = raw.match(/\{[\s\S]*\}/);
     if (!jm) throw new Error('JSONが見つかりません');
@@ -1114,7 +1263,35 @@ anaは高配当を狙う穴フォーメーション5点（オッズ100倍以上�
       <div class="eff-card"><div class="eff-icon">🌊</div><div class="eff-lbl">潮位影響</div><div class="eff-text">${r.tide_effect}</div></div>
       <div class="eff-card"><div class="eff-icon">⚙️</div><div class="eff-lbl">モーター</div><div class="eff-text">${r.motor_comment}</div></div>`;
 
+    // 参考オッズ (2連単・3連複)
+    const allCombos = [...matoiList, ...anaList];
+    const show2t = (box, rowEl) => {
+      const items = allCombos.map(v => {
+        const [a,b] = v.split('-');
+        const k1 = `${a}-${b}`, k2 = `${b}-${a}`;
+        const o1 = odds2t[k1], o2 = odds2t[k2];
+        if (!o1 && !o2) return '';
+        return `<span class="ref-chip">${k1}: ${o1?o1.toFixed(1)+'倍':'—'} / ${k2}: ${o2?o2.toFixed(1)+'倍':'—'}</span>`;
+      }).filter(Boolean).slice(0,6);
+      if (items.length) { box.style.display='block'; rowEl.innerHTML = items.join(''); }
+    };
+    const show3f = (box, rowEl) => {
+      const seen = new Set();
+      const items = allCombos.map(v => {
+        const key = v.split('-').map(Number).sort((a,b)=>a-b).join('-');
+        if (seen.has(key)) return ''; seen.add(key);
+        const o = odds3f[key];
+        return o ? `<span class="ref-chip">${key}: ${o.toFixed(1)}倍</span>` : '';
+      }).filter(Boolean).slice(0,10);
+      if (items.length) { box.style.display='block'; rowEl.innerHTML = items.join(''); }
+    };
+    show2t(document.getElementById('refOdds2t'), document.getElementById('refOdds2tRow'));
+    show3f(document.getElementById('refOdds3f'), document.getElementById('refOdds3fRow'));
+
     predCards.style.display = 'block';
+
+    // 履歴に保存
+    saveToHistory({ id: Date.now(), jcd: VENUE_JCD, venue: VENUE_NAME, hd: dateStr, rno: currentRace, savedAt: new Date().toISOString(), matoi: matoiList, ana: anaList, hit: null, payout: 0 });
   } catch (e) {
     aiText.className = 'ai-text';
     aiText.textContent = `予想生成エラー: ${e.message}`;
@@ -1130,6 +1307,7 @@ function showPage(name, btn) {
   document.getElementById('page-'+name).classList.add('active');
   btn.classList.add('active');
   if (name === 'predict') buildOddsPanel();
+  if (name === 'history') buildHistory();
 }
 
 /* ======================== CLOCK ======================== */
@@ -1158,6 +1336,24 @@ function tick() {
   const ok = await checkServer();
   if (ok) await loadVenues();
   setInterval(checkServer, 30000);
+
+  // 今日の開催場を自動検出してバッジ表示
+  fetch(`${SERVER_URL}/api/today`).then(r => r.json()).then(data => {
+    if (!data.venues || !data.venues.length) return;
+    const openJcds = new Set(data.venues.map(v => v.jcd));
+    const sel = document.getElementById('venueSelect');
+    if (!sel) return;
+    [...sel.options].forEach(opt => {
+      if (openJcds.has(opt.value) && !opt.text.includes('★')) opt.text = '★ ' + opt.text;
+    });
+    // 保存済み会場が今日開催していなければ最初の開催場に変更
+    if (!openJcds.has(VENUE_JCD) && data.venues[0]) {
+      sel.value = data.venues[0].jcd;
+      const opt = sel.options[sel.selectedIndex];
+      applyVenue(opt.value, opt.text.replace('★ ',''));
+    }
+    showToast(`今日の開催: ${data.venues.map(v=>v.name).join('・')}`);
+  }).catch(() => {});
 })();
 </script>
 </body>
