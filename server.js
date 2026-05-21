@@ -452,10 +452,10 @@ app.get('/api/motors', async (req, res) => {
 });
 
 app.post('/api/motors', async (req, res) => {
-  const { jcd, motorNo, grade, note } = req.body;
+  const { jcd, motorNo, grade, note, racerName, motor2Rate } = req.body;
   if (!jcd || !motorNo) return res.status(400).json({ error: 'jcd and motorNo required' });
   try {
-    const val = JSON.stringify({ grade: grade || '', note: note || '', updatedAt: new Date().toISOString() });
+    const val = JSON.stringify({ grade: grade || '', note: note || '', racerName: racerName || '', motor2Rate: motor2Rate || null, updatedAt: new Date().toISOString() });
     await redisCmd('HSET', `motors:${jcd}`, String(motorNo), val);
     res.json({ ok: true });
   } catch (e) {

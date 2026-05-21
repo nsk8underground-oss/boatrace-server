@@ -248,6 +248,24 @@ input,select{font-family:var(--sans);}
 #toast{position:fixed;bottom:calc(var(--nav) + var(--safe-b) + 12px);left:50%;transform:translateX(-50%) translateY(20px);background:rgba(0,200,140,0.92);color:#041a10;font-size:12px;font-weight:700;padding:7px 16px;border-radius:20px;z-index:999;opacity:0;transition:all 0.25s;pointer-events:none;font-family:var(--mono);}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.45;}}
+/* ── Motor List Modal ── */
+#motorListModal{position:fixed;inset:0;z-index:900;display:none;flex-direction:column;background:var(--bg);}
+#motorListModal.open{display:flex;}
+.ml-header{display:flex;align-items:center;gap:10px;padding:calc(var(--safe-t) + 12px) 14px 10px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;}
+.ml-title{flex:1;font-size:14px;font-weight:700;font-family:var(--mono);color:var(--fg);}
+.ml-close{background:none;border:1px solid var(--border);color:var(--muted);width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;}
+.ml-filters{display:flex;gap:6px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;}
+.ml-filter{background:none;border:1px solid var(--border);color:var(--muted);font-family:var(--mono);font-size:11px;font-weight:700;padding:4px 12px;border-radius:14px;cursor:pointer;white-space:nowrap;}
+.ml-filter.on{border-color:var(--accent2);color:var(--accent2);background:rgba(0,180,255,0.1);}
+.ml-body{flex:1;overflow-y:auto;padding:8px 14px 100px;}
+.ml-row{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;}
+.ml-mno{font-size:13px;font-weight:700;font-family:var(--mono);color:var(--accent2);width:36px;flex-shrink:0;}
+.ml-info{flex:1;min-width:0;}
+.ml-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ml-meta{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px;}
+.ml-note{font-size:10px;color:var(--muted);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100px;}
+.ml-btns{display:flex;gap:3px;flex-shrink:0;}
+.ml-empty{text-align:center;padding:40px 20px;color:var(--muted);font-size:13px;}
 </style>
 </head>
 <body>
@@ -341,7 +359,7 @@ input,select{font-family:var(--sans);}
 
   <!-- ── PAGE 2: ENTRY ── -->
   <div class="page" id="page-entry">
-    <div class="sec">出走表 <span style="color:var(--accent2);font-size:9px">— boatrace.jp リアルタイム</span><button class="exhibit-btn" id="beforeBtn" onclick="refreshBefore()">⟳ 展示更新</button><button class="auto-odds-btn" id="autoOddsBtn" onclick="toggleAutoOdds()">⏱ 自動更新</button></div>
+    <div class="sec">出走表 <span style="color:var(--accent2);font-size:9px">— boatrace.jp リアルタイム</span><button class="exhibit-btn" style="margin-left:4px" onclick="showMotorList()">📋 評価一覧</button><button class="exhibit-btn" id="beforeBtn" onclick="refreshBefore()">⟳ 展示更新</button><button class="auto-odds-btn" id="autoOddsBtn" onclick="toggleAutoOdds()">⏱ 自動更新</button></div>
     <div id="entryList"></div>
   </div>
 
@@ -422,6 +440,25 @@ input,select{font-family:var(--sans);}
   <button class="nav-btn" onclick="showPage('history',this)"><span class="nav-icon">📝</span><span class="nav-lbl">履歴</span></button>
 </nav>
 <div id="toast">💾 保存しました</div>
+
+<!-- ── Motor List Modal ── -->
+<div id="motorListModal">
+  <div class="ml-header">
+    <div class="ml-title">⚙️ モーター評価一覧 <span id="mlVenueName" style="color:var(--accent2)"></span></div>
+    <div id="mlCount" style="font-size:10px;color:var(--muted);font-family:var(--mono)"></div>
+    <button class="ml-close" onclick="closeMotorList()">✕</button>
+  </div>
+  <div class="ml-filters">
+    <button class="ml-filter on" data-f="ALL" onclick="setMLFilter('ALL',this)">ALL</button>
+    <button class="ml-filter" data-f="S" onclick="setMLFilter('S',this)" style="color:var(--accent2)">S</button>
+    <button class="ml-filter" data-f="A" onclick="setMLFilter('A',this)" style="color:var(--accent2)">A</button>
+    <button class="ml-filter" data-f="B" onclick="setMLFilter('B',this)" style="color:var(--gold)">B</button>
+    <button class="ml-filter" data-f="C" onclick="setMLFilter('C',this)" style="color:var(--orange)">C</button>
+    <button class="ml-filter" data-f="D" onclick="setMLFilter('D',this)" style="color:var(--red)">D</button>
+    <button class="ml-filter" data-f="-" onclick="setMLFilter('-',this)">未評価</button>
+  </div>
+  <div class="ml-body" id="mlBody"></div>
+</div>
 
 <script>
 /* ======================== CONFIG ======================== */
@@ -521,6 +558,93 @@ async function syncMotors() {
     }
   } catch {}
 }
+/* ======================== MOTOR LIST MODAL ======================== */
+const GRADE_ORDER = { 'S': 0, 'A': 1, 'B': 2, 'C': 3, 'D': 4, '': 5 };
+const GRADE_COLOR = { 'S': 'var(--accent2)', 'A': 'var(--accent2)', 'B': 'var(--gold)', 'C': 'var(--orange)', 'D': 'var(--red)', '': 'var(--muted)' };
+let mlFilter = 'ALL';
+
+async function showMotorList() {
+  document.getElementById('mlVenueName').textContent = VENUE_NAME;
+  document.getElementById('motorListModal').classList.add('open');
+  // 最新データを取得して表示
+  try {
+    const res = await fetch(`${SERVER_URL}/api/motors?jcd=${VENUE_JCD}`);
+    if (res.ok) sharedMotors = await res.json();
+  } catch {}
+  renderMotorList();
+}
+
+function closeMotorList() {
+  document.getElementById('motorListModal').classList.remove('open');
+}
+
+function setMLFilter(f, btn) {
+  mlFilter = f;
+  document.querySelectorAll('.ml-filter').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  renderMotorList();
+}
+
+function renderMotorList() {
+  const body = document.getElementById('mlBody');
+  const entries = Object.entries(sharedMotors)
+    .map(([motorNo, d]) => ({ motorNo, ...d }))
+    .sort((a, b) => (GRADE_ORDER[a.grade] ?? 5) - (GRADE_ORDER[b.grade] ?? 5) || a.motorNo.localeCompare(b.motorNo, undefined, { numeric: true }));
+
+  const filtered = mlFilter === 'ALL' ? entries
+    : mlFilter === '-' ? entries.filter(e => !e.grade)
+    : entries.filter(e => e.grade === mlFilter);
+
+  document.getElementById('mlCount').textContent = `${filtered.length} / ${entries.length} 件`;
+
+  if (!filtered.length) {
+    body.innerHTML = `<div class="ml-empty">${mlFilter === 'ALL' ? 'まだ評価データがありません。<br>出走表でモーターグレードを入力してください。' : 'このグレードの評価はありません'}</div>`;
+    return;
+  }
+
+  body.innerHTML = filtered.map(e => {
+    const gc = GRADE_COLOR[e.grade] || 'var(--muted)';
+    const updAt = e.updatedAt ? new Date(e.updatedAt).toLocaleString('ja-JP', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
+    const m2r = e.motor2Rate != null ? `2連${e.motor2Rate}%` : '';
+    const btns = ['S','A','B','C','D'].map(g =>
+      `<button class="mg-btn mg-${g}${e.grade===g?' on':''}" style="width:28px;height:26px;font-size:11px" onclick="mlClickGrade('${e.motorNo}','${g}')">${g}</button>`
+    ).join('');
+    return `<div class="ml-row" id="mlr-${e.motorNo}">
+      <div class="ml-mno">No.${e.motorNo}</div>
+      <div class="ml-info">
+        <div class="ml-name">${e.racerName || '—'}</div>
+        <div class="ml-meta">${[m2r, updAt].filter(Boolean).join(' · ')}</div>
+        ${e.note ? `<div class="ml-note">📝 ${e.note}</div>` : ''}
+      </div>
+      <div style="text-align:center;margin-right:4px">
+        ${e.grade ? `<span style="font-size:16px;font-weight:700;font-family:var(--mono);color:${gc}">${e.grade}</span>` : '<span style="font-size:11px;color:var(--muted)">未評価</span>'}
+      </div>
+      <div class="ml-btns">${btns}</div>
+    </div>`;
+  }).join('');
+}
+
+function mlClickGrade(motorNo, g) {
+  const cur = sharedMotors[motorNo]?.grade || '';
+  const ng  = cur === g ? '' : g;
+  if (ng) {
+    sharedMotors[motorNo] = { ...(sharedMotors[motorNo] || {}), grade: ng, updatedAt: new Date().toISOString() };
+  } else {
+    if (sharedMotors[motorNo]) sharedMotors[motorNo].grade = '';
+  }
+  // サーバーに保存
+  const d = sharedMotors[motorNo] || {};
+  fetch(`${SERVER_URL}/api/motors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jcd: VENUE_JCD, motorNo, grade: ng, note: d.note || '', racerName: d.racerName || '', motor2Rate: d.motor2Rate || null }),
+  }).catch(() => {});
+  // 出走表も更新
+  const racer = raceData?.racers?.find(r => String(r.motorNo) === String(motorNo));
+  if (racer) { motorGrades[racer.lane] = ng; buildEntryList(raceData.racers); }
+  renderMotorList();
+}
+
 function saveExhibit(race, lane, exhibitTime, st) {
   const date = document.getElementById('dateInput').value.replace(/-/g,'');
   if (!exhibitData[race]) exhibitData[race] = {};
@@ -1205,9 +1329,11 @@ function clickMG(lane, g) {
     fetch(`${SERVER_URL}/api/motors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: ng, note }),
-    }).then(() => { if (ng) sharedMotors[racer.motorNo] = { grade: ng, note }; else delete sharedMotors[racer.motorNo]; })
-      .catch(() => {});
+      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: ng, note, racerName: racer.name || '', motor2Rate: racer.motor2Rate || null }),
+    }).then(() => {
+      if (ng) sharedMotors[racer.motorNo] = { grade: ng, note, racerName: racer.name || '', motor2Rate: racer.motor2Rate || null };
+      else delete sharedMotors[racer.motorNo];
+    }).catch(() => {});
   }
   buildEntryList(raceData?.racers || []);
   showToast(ng ? `⚙️ モーター${lane}番 → ${ng} 共有しました` : `⚙️ モーター${lane}番 評価クリア`);
