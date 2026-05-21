@@ -8,6 +8,7 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 const predictCache = new Map();
+const raceCache    = new Map();
 
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'boatrace2026';
@@ -371,6 +372,11 @@ app.get('/api/all', async (req, res) => {
   const { jcd, hd, rno = '1' } = req.query;
   const err = validateParams(jcd, hd);
   if (err) return res.status(400).json({ error: err });
+
+  const ck = `${jcd}_${hd}_${rno}`;
+  const hit = raceCache.get(ck);
+  if (hit && Date.now() < hit.exp) return res.json(hit.data);
+
   try {
     const [rlRes, oddsRes, beforeRes] = await Promise.allSettled([
       fetchHtml(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=${rno}`),
@@ -387,7 +393,10 @@ app.get('/api/all', async (req, res) => {
       exhibitST:   before.exhibit[r.lane]?.st || null,
       course:      before.exhibit[r.lane]?.course || r.lane,
     }));
-    res.json({ ...rl, weather: before.weather });
+    const responseData = { ...rl, weather: before.weather };
+    for (const [k, v] of raceCache) if (Date.now() >= v.exp) raceCache.delete(k);
+    raceCache.set(ck, { data: responseData, exp: Date.now() + 120000 });
+    res.json(responseData);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
