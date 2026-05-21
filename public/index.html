@@ -635,32 +635,61 @@ function buildMiniRacers(racers) {
     const o  = r.odds != null ? r.odds.toFixed(1) : '—';
     const rc = r.allRate >= 6.5 ? 'var(--accent2)' : r.allRate >= 5.5 ? 'var(--accent)' : 'var(--muted)';
     const lc = r.localRate >= 6.5 ? 'var(--accent2)' : r.localRate >= 5.5 ? 'var(--accent)' : 'var(--muted)';
+    const sdLabel = r.course ? (r.course <= 3 ? 'S' : 'D') : '';
+    const sdStyle = r.course ? (r.course <= 3
+      ? 'background:rgba(0,180,255,0.25);color:var(--accent2)'
+      : 'background:rgba(255,140,0,0.25);color:var(--orange)') : '';
     return `<tr>
       <td><span style="background:${lBgM[r.lane-1]};color:${lFgM[r.lane-1]};width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:11px">${r.lane}</span></td>
       <td style="text-align:left">${r.name||'—'}</td>
       <td class="ecls cls-${r.cls}">${r.cls||'—'}</td>
+      <td>${sdLabel ? `<span style="font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;${sdStyle}">${sdLabel}</span>` : '—'}</td>
       <td style="color:${rc}">${r.allRate||0}</td>
       <td style="color:${lc}">${r.localRate||0}</td>
       <td style="color:${ex!=='—'?'var(--accent2)':'var(--muted)'}">${ex}</td>
       <td style="color:var(--gold)">${o}</td>
     </tr>`;
   }).join('');
-  tbl.innerHTML = `<tr><th>艇</th><th>名前</th><th>級</th><th>全国</th><th>当地</th><th>展示</th><th>単勝</th></tr>${rows}`;
+  tbl.innerHTML = `<tr><th>艇</th><th>名前</th><th>級</th><th>S/D</th><th>全国</th><th>当地</th><th>展示</th><th>単勝</th></tr>${rows}`;
 }
 
 /* ======================== STATS WEATHER ======================== */
+const WIND_ARROW_MAP = {
+  '北東':'↙','北西':'↘','南東':'↖','南西':'↗',
+  '北':'↓','南':'↑','東':'←','西':'→',
+  '追い風':'↓','向かい風':'↑','横風':'↔','無風':'○'
+};
+function windArrow(dir) {
+  if (!dir) return '';
+  for (const k of Object.keys(WIND_ARROW_MAP)) if (dir.includes(k)) return WIND_ARROW_MAP[k];
+  return '';
+}
+
 function updateStatsWeather() {
   const el = document.getElementById('statsWx');
   if (!el) return;
   const w = raceData?.weather;
   const racers = raceData?.racers || [];
-  const wxChips = w && Object.values(w).some(Boolean) ? [
-    w.sky    ? `<div class="wx-chip"><span class="wx-chip-lbl">天候</span>${w.sky}</div>` : '',
-    w.windDir? `<div class="wx-chip"><span class="wx-chip-lbl">風向(実測)</span>${w.windDir}</div>` : '',
-    w.wind   ? `<div class="wx-chip"><span class="wx-chip-lbl">風速</span>${w.wind}m/s</div>` : '',
-    w.water  ? `<div class="wx-chip"><span class="wx-chip-lbl">水温</span>${w.water}℃</div>` : '',
-    w.wave   ? `<div class="wx-chip"><span class="wx-chip-lbl">波高</span>${w.wave}cm</div>` : '',
-  ].join('') : '';
+
+  let wxBar = '';
+  if (w && Object.values(w).some(Boolean)) {
+    const arr = windArrow(w.windDir || '');
+    const items = [
+      w.sky    ? ['天候', w.sky, ''] : null,
+      w.wind   ? ['風速', `${w.wind}m/s`, arr ? ` <span style="color:var(--accent2);font-size:15px;vertical-align:middle">${arr}</span>` : ''] : null,
+      w.windDir? ['風向', w.windDir, ''] : null,
+      w.water  ? ['水温', `${w.water}℃`, ''] : null,
+      w.wave   ? ['波高', `${w.wave}cm`, ''] : null,
+    ].filter(Boolean);
+    wxBar = '<div style="width:100%;display:flex;background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:6px">'
+      + items.map((item, i) =>
+        `<div style="flex:1;padding:7px 4px;text-align:center;${i < items.length-1 ? 'border-right:1px solid var(--border);' : ''}">`
+        + `<div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:2px">${item[0]}</div>`
+        + `<div style="font-size:12px;font-family:var(--mono);font-weight:500">${item[1]}${item[2]}</div>`
+        + '</div>'
+      ).join('')
+      + '</div>';
+  }
 
   const exItems = racers.map(r => {
     const ex = r.exhibitTime != null ? r.exhibitTime : (loadExhibit(currentRace, r.lane).exhibitTime || null);
@@ -673,11 +702,28 @@ function updateStatsWeather() {
     </div>`;
   }).filter(Boolean).join('');
 
-  el.innerHTML = wxChips + (exItems ? `<div class="wx-chip" style="flex:1;min-width:200px"><span class="wx-chip-lbl">展示タイム / ST</span><div class="wx-chip-ex">${exItems}</div></div>` : '');
+  el.innerHTML = wxBar + (exItems ? `<div class="wx-chip" style="flex:1;min-width:200px"><span class="wx-chip-lbl">展示タイム / ST</span><div class="wx-chip-ex">${exItems}</div></div>` : '');
   buildSTViz();
 }
 
 /* ======================== ST VISUALIZER ======================== */
+function renderSTRows(rows) {
+  return rows.map(function(d) {
+    var pct  = Math.min(Math.round(d.st / 0.30 * 100), 97);
+    var stC  = d.st <= 0.10 ? '#f5c518' : d.st >= 0.20 ? '#ff4060' : '#00ffcc';
+    var bg   = lBgM[d.lane - 1]; var fg = lFgM[d.lane - 1];
+    var stLbl = '.' + String(Math.round(d.st * 100)).padStart(2, '0');
+    return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">'
+      + '<div style="width:18px;height:18px;border-radius:50%;background:' + bg + ';color:' + fg + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">' + d.lane + '</div>'
+      + '<div style="flex:1;position:relative;height:14px;background:rgba(255,255,255,0.06);border-radius:3px">'
+      + '<div style="position:absolute;left:0;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.25)"></div>'
+      + '<div style="position:absolute;left:' + pct + '%;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:' + stC + ';box-shadow:0 0 6px ' + stC + '"></div>'
+      + '</div>'
+      + '<div style="font-size:12px;font-family:var(--mono);font-weight:700;color:' + stC + ';min-width:28px;text-align:right">' + stLbl + '</div>'
+      + '</div>';
+  }).join('');
+}
+
 function buildSTViz() {
   var el = document.getElementById('stViz');
   if (!el) return;
@@ -687,7 +733,9 @@ function buildSTViz() {
     var ex = loadExhibit(currentRace, r.lane);
     var et = r.exhibitTime != null ? r.exhibitTime : (ex.exhibitTime ? parseFloat(ex.exhibitTime) : null);
     var st = r.exhibitST   != null ? r.exhibitST   : (ex.st         ? parseFloat(ex.st)         : null);
-    return { lane: r.lane, et: et, st: st };
+    var course = r.course || r.lane;
+    var sd = course <= 3 ? 'S' : 'D';
+    return { lane: r.lane, et: et, st: st, course: course, sd: sd };
   });
 
   var hasEx = exData.some(function(d) { return d.et != null; });
@@ -703,15 +751,18 @@ function buildSTViz() {
     var rng  = maxT - minT || 0.05;
     var sorted = exData.filter(function(d) { return d.et != null; }).slice().sort(function(a,b) { return a.et - b.et; });
 
-    html += '<div style="font-size:9px;color:var(--muted);font-family:var(--mono);letter-spacing:0.1em;margin-bottom:6px">展示タイム（速↑　太いバー＝速い）</div>';
+    html += '<div style="font-size:9px;color:var(--muted);font-family:var(--mono);letter-spacing:0.1em;margin-bottom:6px">展示タイム</div>';
     html += sorted.map(function(d) {
       var pct  = Math.round(((maxT - d.et) / rng) * 80 + 20);
       var best = d.et === minT;
-      var bg   = lBgM[d.lane - 1];
-      var fg   = lFgM[d.lane - 1];
+      var bg   = lBgM[d.lane - 1]; var fg = lFgM[d.lane - 1];
       var barC = best ? '#00ffcc' : bg;
+      var sdC  = d.sd === 'S' ? 'var(--accent2)' : 'var(--orange)';
+      var sdBg = d.sd === 'S' ? 'rgba(0,255,204,0.12)' : 'rgba(255,140,48,0.12)';
+      var sdBd = d.sd === 'S' ? 'rgba(0,255,204,0.35)' : 'rgba(255,140,48,0.35)';
       return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">'
         + '<div style="width:18px;height:18px;border-radius:50%;background:' + bg + ';color:' + fg + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">' + d.lane + '</div>'
+        + '<span style="font-size:8px;font-family:var(--mono);font-weight:700;padding:0 4px;border-radius:2px;background:' + sdBg + ';color:' + sdC + ';border:1px solid ' + sdBd + ';flex-shrink:0">' + d.sd + '</span>'
         + '<div style="flex:1;height:14px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden">'
         + '<div style="width:' + pct + '%;height:100%;background:' + barC + ';border-radius:3px;opacity:' + (best ? 1 : 0.75) + '"></div>'
         + '</div>'
@@ -723,25 +774,26 @@ function buildSTViz() {
 
   if (hasST) {
     var stRows = exData.filter(function(d) { return d.st != null; });
-    html += '<div style="font-size:9px;color:var(--muted);font-family:var(--mono);letter-spacing:0.1em;margin-top:10px;margin-bottom:6px">スタートタイミング（● ＝ 各艇の位置）</div>';
-    stRows.forEach(function(d) {
-      var pct  = Math.min(Math.round(d.st / 0.30 * 100), 97);
-      var stC  = d.st <= 0.10 ? '#f5c518' : d.st >= 0.20 ? '#ff4060' : '#00ffcc';
-      var bg   = lBgM[d.lane - 1];
-      var fg   = lFgM[d.lane - 1];
-      var stLbl = '.' + String(Math.round(d.st * 100)).padStart(2, '0');
+    var sRows  = stRows.filter(function(d) { return d.sd === 'S'; });
+    var dRows  = stRows.filter(function(d) { return d.sd === 'D'; });
+
+    html += '<div style="font-size:9px;color:var(--muted);font-family:var(--mono);letter-spacing:0.1em;margin-top:10px;margin-bottom:6px">スタートタイミング</div>';
+
+    if (sRows.length) {
       html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">'
-        + '<div style="width:18px;height:18px;border-radius:50%;background:' + bg + ';color:' + fg + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">' + d.lane + '</div>'
-        + '<div style="flex:1;position:relative;height:14px;background:rgba(255,255,255,0.06);border-radius:3px">'
-        + '<div style="position:absolute;left:0;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.25)"></div>'
-        + '<div style="position:absolute;left:' + pct + '%;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:' + stC + ';box-shadow:0 0 6px ' + stC + '"></div>'
-        + '</div>'
-        + '<div style="font-size:12px;font-family:var(--mono);font-weight:700;color:' + stC + ';min-width:28px;text-align:right">' + stLbl + '</div>'
-        + '</div>';
-    });
-    html += '<div style="display:flex;justify-content:space-between;padding-left:24px;font-size:8px;color:var(--muted);font-family:var(--mono);margin-top:1px">'
-      + '<span>0.00</span><span>0.10</span><span>0.20</span><span>0.30</span>'
-      + '</div>';
+        + '<span style="font-size:8px;font-family:var(--mono);font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(0,255,204,0.12);color:var(--accent2);border:1px solid rgba(0,255,204,0.3)">SLOW</span>'
+        + '<span style="font-size:9px;color:var(--muted)">コース1-3</span></div>';
+      html += renderSTRows(sRows);
+    }
+    if (dRows.length) {
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-top:4px;margin-bottom:5px">'
+        + '<span style="font-size:8px;font-family:var(--mono);font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(255,140,48,0.12);color:var(--orange);border:1px solid rgba(255,140,48,0.3)">DASH</span>'
+        + '<span style="font-size:9px;color:var(--muted)">コース4-6</span></div>';
+      html += renderSTRows(dRows);
+    }
+
+    html += '<div style="display:flex;justify-content:space-between;padding-left:24px;font-size:8px;color:var(--muted);font-family:var(--mono);margin-top:2px">'
+      + '<span>0.00</span><span>0.10</span><span>0.20</span><span>0.30</span></div>';
   }
 
   html += '</div>';
@@ -947,7 +999,9 @@ function updateWeather(w) {
   set('condWater', w.water != null && w.water ? `${w.water}℃`   : '—');
   set('condWave',  w.wave  != null && w.wave  ? `${w.wave}cm`   : '—');
   if (w.windDir) {
-    set('condWindDir', w.windDir);
+    const arr = windArrow(w.windDir);
+    const el = document.getElementById('condWindDir');
+    if (el) el.innerHTML = arr ? `${w.windDir} <span style="font-size:15px;vertical-align:middle">${arr}</span>` : w.windDir;
     const dirSelect = document.getElementById('windDir');
     const opts = ['追い風','向かい風','横風','無風'];
     const matched = opts.find(o => w.windDir.includes(o));
@@ -1063,7 +1117,7 @@ function buildEntryList(racers) {
 
     return `<div class="entry-card${isFixed?' fixed':''}" id="ec${r.lane}">
       <div class="entry-top">
-        <div class="lane-col l${r.lane}">${r.lane}${r.course && r.course !== r.lane ? `<div style="font-size:8px;opacity:0.7;margin-top:1px">${r.course}コ</div>` : ''}</div>
+        <div class="lane-col l${r.lane}" style="flex-direction:column;gap:2px">${r.lane}${r.course && r.course !== r.lane ? `<div style="font-size:8px;opacity:0.7;margin-top:1px">${r.course}コ</div>` : ''}<span style="font-size:9px;font-weight:700;font-family:var(--mono);padding:1px 4px;border-radius:3px;${r.course ? (r.course<=3?'background:rgba(0,180,255,0.25);color:var(--accent2)':'background:rgba(255,140,0,0.25);color:var(--orange)') : 'display:none'}">${r.course ? (r.course<=3?'S':'D') : ''}</span></div>
         <div class="entry-main">
           <div class="entry-row1">
             <span class="entry-name">${r.name||'—'}</span>
