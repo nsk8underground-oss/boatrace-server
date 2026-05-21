@@ -435,8 +435,9 @@ let currentRace = 1;
 let fixedFirst  = null;
 let raceData    = null;
 let serverOk    = false;
-let motorGrades = {};
-let motorNotes  = {};
+let motorGrades  = {};
+let motorNotes   = {};
+let sharedMotors = {}; // motorNo → { grade, note, updatedAt } (Redisから取得)
 let exhibitData = {};
 
 /* ======================== VENUE ======================== */
@@ -496,8 +497,29 @@ function saveMotor(lane, grade, note) {
 }
 function loadMotor(lane) {
   const date  = document.getElementById('dateInput').value.replace(/-/g,'');
-  const saved = stor(`${MEET_KEY}_mg_${date}_l${lane}`);
-  return saved || { grade: motorGrades[lane]||'', note: motorNotes[lane]||'' };
+  const local = stor(`${MEET_KEY}_mg_${date}_l${lane}`);
+  if (local && local.grade) return local;
+  // ローカルに未設定なら共有データを参照
+  const racer = raceData?.racers?.find(r => r.lane === lane);
+  if (racer?.motorNo && sharedMotors[racer.motorNo]) return sharedMotors[racer.motorNo];
+  return { grade: motorGrades[lane]||'', note: motorNotes[lane]||'' };
+}
+async function syncMotors() {
+  try {
+    const res = await fetch(`${SERVER_URL}/api/motors?jcd=${VENUE_JCD}`);
+    if (!res.ok) return;
+    sharedMotors = await res.json();
+    if (raceData?.racers) {
+      for (const r of raceData.racers) {
+        if (r.motorNo && sharedMotors[r.motorNo]) {
+          const d = sharedMotors[r.motorNo];
+          motorGrades[r.lane] = d.grade || '';
+          motorNotes[r.lane]  = d.note  || '';
+        }
+      }
+      buildEntryList(raceData.racers);
+    }
+  } catch {}
 }
 function saveExhibit(race, lane, exhibitTime, st) {
   const date = document.getElementById('dateInput').value.replace(/-/g,'');
@@ -877,6 +899,7 @@ async function fetchAllData() {
     document.getElementById('predCards').style.display = 'none';
     buildOddsPanel();
     showToast('✅ データ取得完了');
+    syncMotors();
     setTimeout(() => refreshBefore(true).catch(() => {}), 3000);
   } catch (e) {
     showError('取得エラー: ' + e.message + '（時間をおいて再試行してください）');
@@ -909,6 +932,7 @@ async function fetchRace(rno) {
     buildStatsList(data.racers);
     buildMiniRacers(data.racers);
     buildOddsPanel();
+    syncMotors();
     setTimeout(() => refreshBefore(true).catch(() => {}), 3000);
   } catch (e) {
     showError('取得エラー: ' + e.message);
@@ -1112,6 +1136,14 @@ function buildEntryList(racers) {
     const mgBtns = ['S','A','B','C','D'].map(g =>
       `<button class="mg-btn mg-${g}${md.grade===g?' on':''}" onclick="clickMG(${r.lane},'${g}')">${g}</button>`
     ).join('');
+    const date2 = document.getElementById('dateInput').value.replace(/-/g,'');
+    const localGrade = stor(`${MEET_KEY}_mg_${date2}_l${r.lane}`)?.grade;
+    const shared = r.motorNo && sharedMotors[r.motorNo];
+    const isShared = shared?.grade && !localGrade;
+    const updAt = shared?.updatedAt ? new Date(shared.updatedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}) : '';
+    const sharedBadge = isShared
+      ? `<span style="font-size:8px;color:var(--accent2);font-family:var(--mono);background:rgba(0,180,255,0.12);padding:1px 5px;border-radius:3px;border:1px solid rgba(0,180,255,0.3)">🌐 共有${updAt?' '+updAt:''}</span>`
+      : (shared?.grade ? `<span style="font-size:8px;color:var(--muted);font-family:var(--mono)">🌐 ${updAt}</span>` : '');
     const odds     = r.odds != null ? r.odds.toFixed(1) : '—';
     const motorInfo = r.motorNo ? `No.${r.motorNo} 2連:${r.motor2Rate?.toFixed(1)||0}%` : '';
 
@@ -1150,6 +1182,7 @@ function buildEntryList(racers) {
         <div class="mrow">
           <span class="motor-lbl">モーター</span>
           <div class="mg-btns">${mgBtns}</div>
+          ${sharedBadge}
           <button class="fix1-btn${isFixed?' on':''}" onclick="toggleFixed(${r.lane})">${isFixed?'🏆固定中':'1着固定'}</button>
         </div>
         <div class="ex-row">
@@ -1163,16 +1196,34 @@ function buildEntryList(racers) {
 }
 
 function clickMG(lane, g) {
-  const md = loadMotor(lane);
-  const ng = md.grade === g ? '' : g;
-  const note = document.getElementById('note'+lane)?.value || md.note;
+  const md   = loadMotor(lane);
+  const ng   = md.grade === g ? '' : g;
+  const note = document.getElementById('note'+lane)?.value || md.note || '';
   saveMotor(lane, ng, note);
+  const racer = raceData?.racers?.find(r => r.lane === lane);
+  if (racer?.motorNo) {
+    fetch(`${SERVER_URL}/api/motors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: ng, note }),
+    }).then(() => { if (ng) sharedMotors[racer.motorNo] = { grade: ng, note }; else delete sharedMotors[racer.motorNo]; })
+      .catch(() => {});
+  }
   buildEntryList(raceData?.racers || []);
-  showToast('💾 保存しました');
+  showToast(ng ? `⚙️ モーター${lane}番 → ${ng} 共有しました` : `⚙️ モーター${lane}番 評価クリア`);
 }
 function saveNote(lane) {
-  const md = loadMotor(lane);
-  saveMotor(lane, md.grade, document.getElementById('note'+lane)?.value||'');
+  const md   = loadMotor(lane);
+  const note = document.getElementById('note'+lane)?.value || '';
+  saveMotor(lane, md.grade, note);
+  const racer = raceData?.racers?.find(r => r.lane === lane);
+  if (racer?.motorNo && md.grade) {
+    fetch(`${SERVER_URL}/api/motors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: md.grade, note }),
+    }).catch(() => {});
+  }
   debouncedToast();
 }
 function saveEx(lane) {
