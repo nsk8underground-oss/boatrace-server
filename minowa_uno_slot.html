@@ -234,6 +234,15 @@ select.inp-field{-webkit-appearance:none;cursor:pointer;}
 
     <div class="sec">X示唆データ入力 <span style="color:var(--muted);font-size:9px">— 赤/金/虹枠 + 差枚数</span></div>
 
+    <!-- Image upload for auto-detect -->
+    <div style="padding:0 14px 8px">
+      <button class="btn-add" style="border-color:rgba(168,117,255,0.4);color:var(--purple)" onclick="document.getElementById('xImageInput').click()">
+        <span>📸</span> X投稿スクショから自動読み込み（Gemini Vision）
+      </button>
+      <input type="file" id="xImageInput" accept="image/*" style="display:none" onchange="analyzeXImage(this)">
+      <div id="imageAnalyzeStatus" style="display:none;font-size:11px;font-family:var(--mono);padding:6px 10px;background:var(--bg3);border-radius:6px;margin-top:6px"></div>
+    </div>
+
     <!-- Day note -->
     <div style="padding:0 14px 8px">
       <textarea class="note-inp" id="dayNote" placeholder="この日のメモ（イベント、特日など）" rows="2"></textarea>
@@ -1225,6 +1234,72 @@ function renderAIPrediction(data) {
   if (data.advice)   html += `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,180,255,0.06);border:1px solid rgba(0,180,255,0.2);border-radius:6px;font-size:11px;line-height:1.6"><div style="font-size:9px;color:var(--accent);font-family:var(--mono);margin-bottom:4px">ADVICE</div>${escHtml(data.advice)}</div>`;
   txt.className = 'ai-text';
   txt.innerHTML = html;
+}
+
+/* ===================== IMAGE ANALYSIS (Gemini Vision) ===================== */
+async function analyzeXImage(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('imageAnalyzeStatus');
+  statusEl.style.display = '';
+  statusEl.style.color = 'var(--muted)';
+  statusEl.textContent = '⏳ Gemini Visionで解析中...';
+
+  try {
+    // Convert to base64
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const res = await fetch(`${SERVER_URL}/api/slot/analyze-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: base64, mimeType: file.type }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const detected = data.machines || [];
+    if (!detected.length) {
+      statusEl.style.color = 'var(--orange)';
+      statusEl.textContent = '⚠ 台番号/枠色を検出できませんでした。手動で入力してください。';
+      input.value = '';
+      return;
+    }
+
+    // Merge detected machines into inputMachines (avoid duplicates)
+    let added = 0;
+    detected.forEach(d => {
+      const existing = inputMachines.find(m => String(m.no) === String(d.no));
+      if (existing) {
+        // Update hint type if detected
+        if (d.hintType && d.hintType !== 'なし') existing.hintType = d.hintType;
+        if (d.model && !existing.model) existing.model = d.model;
+      } else {
+        // Find model from master if not provided
+        const master = machines.find(m => String(m.no) === String(d.no));
+        inputMachines.push({
+          no: d.no,
+          model: d.model || master?.model || '—',
+          hintType: d.hintType || 'なし',
+          diffCoins: null, games: null, estSetting: '', note: '',
+        });
+        added++;
+      }
+    });
+
+    renderInputMachines();
+    statusEl.style.color = 'var(--accent2)';
+    statusEl.textContent = `✓ ${detected.length}台を検出 (${detected.map(d=>`#${d.no}:${d.hintType}`).join(' / ')})`;
+    showToast(`📸 ${detected.length}台を自動検出`);
+  } catch (e) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+  input.value = '';
 }
 
 /* ===================== MISC ===================== */

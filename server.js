@@ -764,6 +764,62 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// スロット X投稿画像 → Gemini Vision 解析
+app.post('/api/slot/analyze-image', async (req, res) => {
+  if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY未設定' });
+  const { imageBase64, mimeType } = req.body;
+  if (!imageBase64) return res.status(400).json({ error: 'imageBase64が必要です' });
+
+  const prompt = `この画像はパチスロ店の告知画像またはX(Twitter)投稿のスクリーンショットです。
+赤枠・金枠・虹枠（レインボー）で囲まれた台番号と機種名を特定してください。
+
+枠色の判定基準:
+- 赤枠: 赤色の枠で囲まれている
+- 金枠: 金色・黄色の枠で囲まれている
+- 虹枠: 虹色・レインボーカラーの枠で囲まれている
+
+必ずJSONのみを返してください（説明文なし）:
+{
+  "machines": [
+    {"no": "台番号（数字のみ）", "model": "機種名（読み取れない場合は空文字）", "hintType": "赤枠 または 金枠 または 虹枠"}
+  ]
+}
+台番号・枠色が読み取れない場合: {"machines": []}`;
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { inline_data: { mime_type: mimeType || 'image/jpeg', data: imageBase64 } },
+          { text: prompt },
+        ]}],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 500,
+          responseMimeType: 'application/json',
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const data = await response.json();
+    if (data.error) return res.status(500).json({ error: data.error.message });
+    const text = data.candidates?.[0]?.content?.parts
+      ?.filter(p => !p.thought).map(p => p.text || '').join('') || '';
+    const parsed = JSON.parse(text);
+    res.json(parsed);
+  } catch (e) {
+    const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました' : e.message;
+    res.status(500).json({ error: msg });
+  }
+});
+
 // 三ノ輪UNO スロットダッシュボード
 app.get('/slot', (req, res) => {
   res.sendFile(path.join(__dirname, 'minowa_uno_slot.html'));
