@@ -266,6 +266,11 @@ input,select{font-family:var(--sans);}
 .ml-note{font-size:10px;color:var(--muted);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100px;}
 .ml-btns{display:flex;gap:3px;flex-shrink:0;}
 .ml-empty{text-align:center;padding:40px 20px;color:var(--muted);font-size:13px;}
+.race-chip.ended{opacity:0.4;}
+.race-chip.ended .chip-num{text-decoration:line-through;}
+.chip-end{font-size:8px;color:var(--red);font-family:var(--mono);font-weight:700;margin-top:1px;letter-spacing:0.05em;}
+.pick-sel{background:var(--bg2);border:1px solid var(--border);color:var(--fg);font-family:var(--mono);font-size:13px;font-weight:700;width:40px;padding:6px 2px;border-radius:6px;text-align:center;cursor:pointer;}
+.pick-analyze-btn{background:rgba(245,193,24,0.1);border:1px solid var(--gold);color:var(--gold);font-family:var(--mono);font-size:12px;font-weight:700;padding:8px 16px;border-radius:6px;cursor:pointer;margin-left:8px;}
 </style>
 </head>
 <body>
@@ -280,6 +285,7 @@ input,select{font-family:var(--sans);}
           <span class="srv-dot checking" id="srvDot"></span>
           <span id="srvTxt">サーバー確認中...</span>
         </span>
+        <span style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-left:6px" id="appVersion"></span>
       </div>
     </div>
   </div>
@@ -419,6 +425,19 @@ input,select{font-family:var(--sans);}
     </div>
     <button class="pb-main" id="resultBtn" onclick="checkResult()" style="background:rgba(245,193,24,0.08);border-color:var(--gold);color:var(--gold)">📊 レース結果を確認</button>
     <div id="resultBox" style="display:none;margin:0 14px 8px"></div>
+    <div class="sec">買い目アドバイス <span style="color:var(--muted);font-size:9px">— 自分の3連単をAIに分析</span></div>
+    <div style="padding:0 14px 14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">1着〜3着を選んで分析ボタンを押してください</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <select class="pick-sel" id="myPick1"><option value="">1着</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+        <span style="color:var(--muted);font-weight:700">−</span>
+        <select class="pick-sel" id="myPick2"><option value="">2着</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+        <span style="color:var(--muted);font-weight:700">−</span>
+        <select class="pick-sel" id="myPick3"><option value="">3着</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+        <button class="pick-analyze-btn" onclick="analyzeMyPick()">🔍 分析</button>
+      </div>
+      <div id="myPickBox" style="display:none;margin-top:10px"></div>
+    </div>
     <div class="sec">出目リスト参照</div>
     <div class="dememe-scroll" id="dememe2"></div>
     <div style="height:8px"></div>
@@ -463,6 +482,8 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
+const APP_VERSION = 'v2.3';
+document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
 
 /* ======================== STATE ======================== */
 let VENUE_JCD  = localStorage.getItem('br_venue') || '04';
@@ -1134,11 +1155,18 @@ function showToast(msg) {
 function buildRaceChips(schedule) {
   const el = document.getElementById('raceScroll');
   if (!schedule || schedule.length === 0) { el.innerHTML = ''; return; }
-  el.innerHTML = schedule.map(r => `
-    <div class="race-chip${r.rno === currentRace ? ' active' : ''}" onclick="fetchRace(${r.rno})">
+  const now = new Date();
+  el.innerHTML = schedule.map(r => {
+    const [h, m] = (r.time || '0:0').split(':').map(Number);
+    const rt = new Date(); rt.setHours(h, m, 0, 0);
+    const ended = (now - rt) > 12 * 60 * 1000; // 締切から12分以上経過
+    const active = r.rno === currentRace;
+    return `<div class="race-chip${active ? ' active' : ''}${ended ? ' ended' : ''}" onclick="fetchRace(${r.rno})">
       <div class="chip-num">${r.rno}R</div>
       <div class="chip-time">${r.time}</div>
-    </div>`).join('');
+      ${ended ? '<div class="chip-end">終了</div>' : ''}
+    </div>`;
+  }).join('');
 }
 
 /* ======================== WEATHER ======================== */
@@ -1623,6 +1651,83 @@ tenkaiは展開シナリオを具体的に描写（選手の戦術・コース�
 }
 
 /* ======================== RESULT CHECK ======================== */
+/* ======================== MY PICK ADVISOR ======================== */
+async function analyzeMyPick() {
+  const p1 = document.getElementById('myPick1').value;
+  const p2 = document.getElementById('myPick2').value;
+  const p3 = document.getElementById('myPick3').value;
+  if (!p1 || !p2 || !p3) { showToast('1着〜3着をすべて選んでください'); return; }
+  if (p1 === p2 || p2 === p3 || p1 === p3) { showToast('同じ艇番は選べません'); return; }
+  if (!raceData) { showToast('先にレースデータを取得してください'); return; }
+
+  const combo = `${p1}-${p2}-${p3}`;
+  const box = document.getElementById('myPickBox');
+  box.style.display = 'block';
+  box.innerHTML = '<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">⚡ 分析中...</div>';
+
+  const racers = raceData?.racers || [];
+  const lines = racers.map(r => {
+    const md = loadMotor(r.lane);
+    const ex = loadExhibit(currentRace, r.lane);
+    if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
+    if (r.exhibitST   != null) ex.st          = r.exhibitST;
+    return `${r.lane}号艇:${r.name||'不明'}(${r.cls||'—'}) 全国${r.allRate||0}/当地${r.localRate||0} 単勝${r.odds!=null?r.odds.toFixed(1)+'倍':'不明'} モーター:${md.grade||'未評価'} 展示:${ex.exhibitTime||'?'} ST:${ex.st||'?'}`;
+  }).join('\n');
+
+  const prompt = `ボートレース専門予想師として、以下の買い目を分析してください。
+
+【${VENUE_NAME} 第${currentRace}レース】
+【買い目】3連単 ${combo}
+
+【出走データ】
+${lines}
+
+以下のJSON形式のみで回答：
+{
+  "verdict": "有力/ありえる/難しい のいずれか",
+  "verdict_reason": "50文字以内の判定理由",
+  "strengths": "この買い目の強み（60文字以内）",
+  "risks": "この買い目のリスク（60文字以内）",
+  "advice": "購入前に確認すべきポイント（80文字以内）",
+  "expected_odds": "推定オッズ帯（例：10〜30倍）"
+}`;
+
+  try {
+    const res = await fetch(`${SERVER_URL}/api/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, cacheKey: `pick_${VENUE_JCD}_${document.getElementById('dateInput').value.replace(/-/g,'')}_${currentRace}_${combo}` }),
+      signal: AbortSignal.timeout(25000),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const text = data.content?.[0]?.text || '';
+    let r;
+    try { r = JSON.parse(text); } catch { throw new Error('レスポンス解析エラー'); }
+
+    const vColor = r.verdict === '有力' ? 'var(--accent2)' : r.verdict === 'ありえる' ? 'var(--gold)' : 'var(--red)';
+    const dotHtml = [p1,p2,p3].map(n =>
+      `<span style="display:inline-flex;width:22px;height:22px;border-radius:50%;background:${lBgM[n-1]};color:${lFgM[n-1]};align-items:center;justify-content:center;font-size:11px;font-weight:700">${n}</span>`
+    ).join('<span style="color:var(--muted);margin:0 2px">−</span>');
+
+    box.innerHTML = `<div class="ai-box" style="border-color:rgba(245,193,24,0.3)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        ${dotHtml}
+        <span style="font-size:15px;font-weight:700;font-family:var(--mono);color:${vColor}">${r.verdict||'—'}</span>
+        ${r.expected_odds ? `<span style="font-size:10px;color:var(--muted);font-family:var(--mono)">${r.expected_odds}</span>` : ''}
+      </div>
+      <div style="font-size:12px;color:var(--fg);margin-bottom:8px">${r.verdict_reason||''}</div>
+      <div style="display:grid;gap:6px">
+        ${r.strengths ? `<div style="font-size:11px"><span style="color:var(--accent2);font-family:var(--mono);font-weight:700">強み</span> ${r.strengths}</div>` : ''}
+        ${r.risks     ? `<div style="font-size:11px"><span style="color:var(--red);font-family:var(--mono);font-weight:700">リスク</span> ${r.risks}</div>` : ''}
+        ${r.advice    ? `<div style="font-size:11px;padding:7px;background:rgba(245,193,24,0.08);border-radius:5px;border-left:3px solid var(--gold)"><span style="color:var(--gold);font-family:var(--mono);font-weight:700">アドバイス</span> ${r.advice}</div>` : ''}
+      </div>
+    </div>`;
+  } catch (e) {
+    box.innerHTML = `<div style="color:var(--red);font-size:12px">分析エラー: ${e.message}</div>`;
+  }
+}
+
 async function checkResult() {
   if (!raceData) { alert('先にレースデータを取得してください'); return; }
   const btn = document.getElementById('resultBtn');
