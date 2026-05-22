@@ -1,0 +1,1254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>三ノ輪UNO スロット 設定予想</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+:root{
+  --bg:#07101d;--bg2:#0d1825;--bg3:#121f30;
+  --border:rgba(0,180,255,0.15);--border2:rgba(0,180,255,0.32);
+  --accent:#00b4ff;--accent2:#00ffcc;--gold:#f5c518;--red:#ff4060;
+  --orange:#ff8c30;--purple:#a875ff;--text:#c8e0ff;--muted:#4e6a88;
+  --rainbow-a:#ff4060;--rainbow-b:#f5c518;--rainbow-c:#00ffcc;
+  --mono:'Share Tech Mono',monospace;--sans:'Noto Sans JP',sans-serif;
+  --hdr:52px;--nav:56px;--safe-b:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--sans);}
+button{touch-action:manipulation;font-family:var(--sans);}
+input,select,textarea{font-family:var(--sans);}
+#hdr{position:fixed;top:0;left:0;right:0;height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 12px;z-index:200;padding-top:env(safe-area-inset-top,0);}
+.hdr-l{display:flex;align-items:center;gap:10px;}
+.slot-tag{background:linear-gradient(135deg,rgba(245,193,24,0.2),rgba(255,64,96,0.2));border:1px solid var(--gold);color:var(--gold);font-family:var(--mono);font-size:12px;font-weight:700;padding:4px 9px;border-radius:3px;white-space:nowrap;}
+.hdr-info{line-height:1.3;}
+.hdr-name{font-size:13px;font-weight:700;}
+.hdr-sub{font-size:10px;color:var(--muted);font-family:var(--mono);}
+.clock{font-family:var(--mono);font-size:14px;color:var(--accent);}
+#content{position:fixed;top:var(--hdr);left:0;right:0;bottom:calc(var(--nav) + var(--safe-b));overflow:hidden;}
+.page{display:none;height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:20px;}
+.page.active{display:block;}
+#nav{position:fixed;bottom:0;left:0;right:0;height:calc(var(--nav) + var(--safe-b));background:var(--bg2);border-top:1px solid var(--border);display:grid;grid-template-columns:repeat(5,1fr);padding-bottom:var(--safe-b);}
+.nav-btn{background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:6px 4px;color:var(--muted);}
+.nav-btn.active{color:var(--accent);}
+.nav-icon{font-size:19px;line-height:1;}
+.nav-lbl{font-size:9px;letter-spacing:0.04em;}
+.sec{font-size:10px;color:var(--muted);letter-spacing:0.2em;font-family:var(--mono);padding:12px 14px 6px;display:flex;align-items:center;gap:8px;}
+.sec::after{content:'';flex:1;height:1px;background:var(--border);}
+/* HINT FRAME STYLES */
+.hint-none{border-color:var(--border);}
+.hint-red{border-color:#ff4060;box-shadow:0 0 8px rgba(255,64,96,0.3);}
+.hint-gold{border-color:#f5c518;box-shadow:0 0 8px rgba(245,193,24,0.4);}
+.hint-rainbow{border-color:transparent;background-clip:padding-box;outline:2px solid transparent;position:relative;}
+.hint-rainbow::before{content:'';position:absolute;inset:-2px;border-radius:inherit;background:linear-gradient(90deg,#ff4060,#f5c518,#00ffcc,#00b4ff,#a875ff,#ff4060);z-index:-1;border-radius:11px;}
+/* HINT BADGES */
+.hbadge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:var(--mono);padding:3px 8px;border-radius:4px;white-space:nowrap;}
+.hbadge-none{background:rgba(78,106,136,0.2);color:var(--muted);border:1px solid rgba(78,106,136,0.3);}
+.hbadge-red{background:rgba(255,64,96,0.15);color:#ff4060;border:1px solid rgba(255,64,96,0.4);}
+.hbadge-gold{background:rgba(245,193,24,0.15);color:#f5c518;border:1px solid rgba(245,193,24,0.4);}
+.hbadge-rainbow{background:linear-gradient(90deg,rgba(255,64,96,0.12),rgba(245,193,24,0.12),rgba(0,255,204,0.12));color:#fff;border:1px solid rgba(255,255,255,0.25);}
+/* CARDS */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;overflow:hidden;}
+.card-hdr{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.card-title{font-size:13px;font-weight:700;}
+.card-body{padding:12px 14px;}
+/* MACHINE INPUT CARD */
+.machine-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;overflow:visible;transition:border-color 0.2s;}
+.mc-top{padding:10px 12px;display:flex;align-items:center;gap:8px;}
+.mc-num{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--accent2);min-width:36px;}
+.mc-model{flex:1;font-size:13px;font-weight:500;color:var(--text);}
+.mc-del{background:none;border:1px solid rgba(255,64,96,0.25);color:rgba(255,64,96,0.6);width:28px;height:28px;border-radius:5px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.mc-body{padding:8px 12px 12px;border-top:1px solid var(--border);}
+.mc-row{display:grid;gap:6px;margin-bottom:8px;}
+.mc-row2{grid-template-columns:1fr 1fr;}
+.mc-row3{grid-template-columns:1fr 1fr 1fr;}
+.inp-grp{display:flex;flex-direction:column;gap:3px;}
+.inp-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);letter-spacing:0.08em;}
+.inp-field{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:13px;font-weight:600;padding:7px 10px;border-radius:5px;outline:none;width:100%;}
+.inp-field:focus{border-color:var(--accent2);}
+.inp-field::placeholder{color:var(--muted);font-size:11px;font-weight:400;}
+.inp-field.coins-pos{color:var(--accent2);}
+.inp-field.coins-neg{color:var(--red);}
+select.inp-field{-webkit-appearance:none;cursor:pointer;}
+/* HINT TYPE SELECTOR */
+.hint-sel{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
+.hint-opt{background:var(--bg3);border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:700;font-family:var(--mono);padding:6px 2px;border-radius:5px;cursor:pointer;text-align:center;transition:all 0.15s;}
+.hint-opt.sel-none{background:rgba(78,106,136,0.2);border-color:var(--muted);color:var(--text);}
+.hint-opt.sel-red{background:rgba(255,64,96,0.2);border-color:#ff4060;color:#ff4060;}
+.hint-opt.sel-gold{background:rgba(245,193,24,0.2);border-color:#f5c518;color:#f5c518;}
+.hint-opt.sel-rainbow{background:linear-gradient(135deg,rgba(255,64,96,0.18),rgba(245,193,24,0.18),rgba(0,255,204,0.18));border-color:rgba(255,255,255,0.3);color:#fff;}
+/* NOTE INPUT */
+.note-inp{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:12px;padding:7px 10px;border-radius:5px;width:100%;outline:none;resize:none;min-height:40px;}
+.note-inp:focus{border-color:var(--accent2);}
+.note-inp::placeholder{color:var(--muted);}
+/* BUTTONS */
+.btn-primary{display:block;width:calc(100% - 28px);margin:0 14px 10px;background:rgba(0,180,255,0.15);border:1px solid var(--accent);color:var(--accent);font-size:14px;font-weight:700;padding:13px;border-radius:8px;cursor:pointer;text-align:center;}
+.btn-primary:active{background:rgba(0,180,255,0.25);}
+.btn-primary:disabled{opacity:0.4;cursor:not-allowed;}
+.btn-green{background:rgba(0,255,204,0.12);border-color:var(--accent2);color:var(--accent2);}
+.btn-gold{background:rgba(245,193,24,0.1);border-color:var(--gold);color:var(--gold);}
+.btn-add{display:flex;align-items:center;justify-content:center;gap:6px;width:calc(100% - 28px);margin:0 14px 8px;background:rgba(0,255,204,0.06);border:1px dashed rgba(0,255,204,0.3);color:var(--accent2);font-size:13px;font-weight:600;padding:11px;border-radius:8px;cursor:pointer;}
+.btn-add:active{background:rgba(0,255,204,0.12);}
+/* STATS SUMMARY */
+.stats-row{display:grid;gap:8px;margin:8px 14px;}
+.stats-4{grid-template-columns:repeat(4,1fr);}
+.stats-3{grid-template-columns:repeat(3,1fr);}
+.stats-2{grid-template-columns:1fr 1fr;}
+.stat-box{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 8px;text-align:center;}
+.stat-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:4px;line-height:1.3;}
+.stat-val{font-size:18px;font-weight:700;font-family:var(--mono);}
+.stat-val.pos{color:var(--accent2);}
+.stat-val.neg{color:var(--red);}
+.stat-val.gold{color:var(--gold);}
+/* HISTORY CARDS */
+.hist-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;overflow:hidden;}
+.hist-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 8px;}
+.hist-date{font-size:13px;font-weight:700;font-family:var(--mono);}
+.hist-day{font-size:11px;color:var(--muted);}
+.hist-summary{font-size:11px;color:var(--accent2);font-family:var(--mono);}
+.hist-machines{padding:0 12px 10px;}
+.hist-machine-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);}
+.hist-machine-row:last-child{border-bottom:none;}
+.hm-no{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent2);min-width:36px;}
+.hm-model{flex:1;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.hm-coins{font-family:var(--mono);font-size:13px;font-weight:700;min-width:72px;text-align:right;}
+.hm-coins.pos{color:var(--accent2);}
+.hm-coins.neg{color:var(--red);}
+.hm-coins.zero{color:var(--muted);}
+.hist-expand-btn{background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;padding:4px 12px 6px;width:100%;text-align:center;}
+/* PREDICT CARDS */
+.pred-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;overflow:hidden;transition:border-color 0.2s;}
+.pred-card.rank1{border-color:rgba(255,255,255,0.3);background:linear-gradient(135deg,rgba(255,64,96,0.05),rgba(245,193,24,0.05),rgba(0,255,204,0.05));}
+.pred-card.rank2{border-color:rgba(245,193,24,0.35);}
+.pred-card.rank3{border-color:rgba(0,180,255,0.3);}
+.pred-top{display:flex;align-items:center;gap:10px;padding:12px 14px;}
+.pred-rank{font-family:var(--mono);font-size:11px;font-weight:700;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.pred-rank.r1{background:linear-gradient(135deg,#ff4060,#f5c518);color:#000;}
+.pred-rank.r2{background:rgba(245,193,24,0.25);color:var(--gold);}
+.pred-rank.r3{background:rgba(0,180,255,0.2);color:var(--accent);}
+.pred-rank.rn{background:rgba(78,106,136,0.2);color:var(--muted);}
+.pred-main{flex:1;}
+.pred-no{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--accent2);}
+.pred-model{font-size:11px;color:var(--muted);margin-top:1px;}
+.pred-score-bar{flex-shrink:0;text-align:right;}
+.score-val{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--gold);}
+.score-lbl{font-size:9px;color:var(--muted);}
+.pred-body{padding:0 14px 12px;border-top:1px solid var(--border);}
+.pred-stats-row{display:flex;gap:8px;padding-top:10px;flex-wrap:wrap;}
+.pred-stat{background:var(--bg3);border-radius:6px;padding:7px 10px;text-align:center;flex:1;min-width:70px;}
+.ps-lbl{font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px;}
+.ps-val{font-size:13px;font-weight:700;font-family:var(--mono);}
+.pred-hint-hist{display:flex;gap:4px;flex-wrap:wrap;padding-top:8px;}
+/* ANALYSIS */
+.analysis-bar-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+.abar-lbl{font-size:11px;font-family:var(--mono);width:56px;flex-shrink:0;font-weight:700;}
+.abar-track{flex:1;height:20px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;position:relative;}
+.abar-fill{height:100%;border-radius:4px;display:flex;align-items:center;padding-left:8px;}
+.abar-fill-lbl{font-size:10px;font-weight:700;font-family:var(--mono);color:#fff;white-space:nowrap;}
+.abar-val{font-size:11px;font-family:var(--mono);font-weight:700;min-width:72px;text-align:right;}
+/* MACHINE LIST (settings) */
+.mach-row{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;}
+.mach-no{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--accent2);min-width:40px;}
+.mach-model{flex:1;font-size:12px;}
+.mach-del{background:none;border:1px solid rgba(255,64,96,0.25);color:rgba(255,64,96,0.6);width:26px;height:26px;border-radius:4px;cursor:pointer;font-size:12px;}
+/* DATE BAR */
+.date-bar{display:flex;align-items:center;gap:8px;padding:10px 14px 0;}
+.date-input{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:13px;padding:7px 10px;border-radius:5px;outline:none;flex:1;}
+.date-input:focus{border-color:var(--accent);}
+.go-btn{background:rgba(0,180,255,0.15);border:1px solid var(--accent);color:var(--accent);font-size:12px;font-weight:700;padding:7px 14px;border-radius:5px;cursor:pointer;white-space:nowrap;}
+/* AI BOX */
+.ai-box{background:var(--bg2);border:1px solid rgba(0,255,204,0.2);border-radius:10px;margin:0 14px 8px;padding:14px;}
+.ai-hdr{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.ai-badge{width:24px;height:24px;border:1px solid var(--accent2);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--accent2);font-family:var(--mono);font-weight:bold;flex-shrink:0;}
+.ai-lbl{font-size:11px;font-weight:700;color:var(--accent2);letter-spacing:0.12em;font-family:var(--mono);}
+.ai-text{font-size:12px;line-height:1.85;color:var(--text);}
+.ai-text.loading{color:var(--muted);animation:blink 1s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.3;}}
+/* TOAST */
+#toast{position:fixed;bottom:calc(var(--nav) + var(--safe-b) + 12px);left:50%;transform:translateX(-50%) translateY(20px);background:rgba(0,200,140,0.92);color:#041a10;font-size:12px;font-weight:700;padding:7px 16px;border-radius:20px;z-index:999;opacity:0;transition:all 0.25s;pointer-events:none;font-family:var(--mono);}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+#toast.err{background:rgba(255,64,96,0.92);color:#fff;}
+/* MISC */
+.spin{display:inline-block;font-style:normal;animation:spin 0.7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted);font-size:13px;line-height:1.8;}
+.tag{font-size:9px;font-family:var(--mono);font-weight:700;padding:2px 7px;border-radius:3px;white-space:nowrap;}
+.tag-today{background:rgba(0,255,204,0.12);color:var(--accent2);border:1px solid rgba(0,255,204,0.3);}
+.divider{height:1px;background:var(--border);margin:4px 14px;}
+.coins-display{font-family:var(--mono);font-size:16px;font-weight:700;}
+.coins-display.pos{color:var(--accent2);}
+.coins-display.neg{color:var(--red);}
+/* RATE BAR for analysis */
+.rate-bar-wrap{margin:0 14px 12px;}
+.rate-bar-title{font-size:10px;color:var(--muted);font-family:var(--mono);letter-spacing:0.1em;margin-bottom:8px;}
+.rb-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.rb-lbl{font-size:11px;font-family:var(--mono);width:64px;flex-shrink:0;}
+.rb-track{flex:1;height:16px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;}
+.rb-fill{height:100%;border-radius:3px;display:flex;align-items:center;padding:0 6px;}
+.rb-fill-lbl{font-size:9px;font-weight:700;color:#fff;}
+.rb-val{font-size:11px;font-family:var(--mono);font-weight:700;min-width:64px;text-align:right;}
+/* calendar dot legend */
+.dot-legend{display:flex;gap:10px;padding:0 14px 8px;flex-wrap:wrap;}
+.dl-item{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--muted);font-family:var(--mono);}
+.dl-dot{width:10px;height:10px;border-radius:50%;}
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;z-index:800;background:rgba(0,0,0,0.7);display:none;align-items:flex-end;}
+.modal-overlay.open{display:flex;}
+.modal-sheet{background:var(--bg2);border-radius:16px 16px 0 0;width:100%;max-height:80vh;overflow-y:auto;padding:16px 14px calc(20px + var(--safe-b));}
+.modal-title{font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;}
+.modal-close{background:none;border:1px solid var(--border);color:var(--muted);width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px;}
+/* MACHINE QUICK SELECT */
+.mqs-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;}
+.mqs-item{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 6px;cursor:pointer;text-align:center;}
+.mqs-item:active{background:rgba(0,180,255,0.1);}
+.mqs-no{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--accent2);}
+.mqs-name{font-size:9px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+</style>
+</head>
+<body>
+
+<header id="hdr">
+  <div class="hdr-l">
+    <div class="slot-tag">SLOT</div>
+    <div class="hdr-info">
+      <div class="hdr-name">三ノ輪UNO</div>
+      <div class="hdr-sub" id="hdrSub">設定示唆 &amp; 翌日予想</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div class="clock" id="clock"></div>
+  </div>
+</header>
+
+<div id="content">
+
+  <!-- ===== PAGE: 入力 ===== -->
+  <div class="page active" id="page-input">
+    <div class="date-bar">
+      <input type="date" class="date-input" id="inputDate">
+      <button class="go-btn" onclick="loadInputPage()">読込</button>
+    </div>
+
+    <div class="sec">X示唆データ入力 <span style="color:var(--muted);font-size:9px">— 赤/金/虹枠 + 差枚数</span></div>
+
+    <!-- Day note -->
+    <div style="padding:0 14px 8px">
+      <textarea class="note-inp" id="dayNote" placeholder="この日のメモ（イベント、特日など）" rows="2"></textarea>
+    </div>
+
+    <div id="machineInputList"></div>
+
+    <button class="btn-add" onclick="openMachineModal()">
+      <span>＋</span> 台を追加
+    </button>
+
+    <div style="display:flex;gap:8px;padding:0 14px 8px">
+      <button class="btn-primary" style="margin:0;flex:1" onclick="saveInputData()">
+        💾 保存
+      </button>
+      <button class="btn-primary btn-gold" style="margin:0;width:100px" id="deleteBtn" onclick="deleteInputData()" style="display:none">
+        削除
+      </button>
+    </div>
+
+    <div style="height:8px"></div>
+  </div>
+
+  <!-- ===== PAGE: 予想 ===== -->
+  <div class="page" id="page-predict">
+    <div class="sec">翌日高設定 予想 <span style="color:var(--muted);font-size:9px">— X示唆 × 差枚数 分析</span></div>
+
+    <div id="predictDateInfo" style="padding:4px 14px 8px;font-size:11px;color:var(--muted);font-family:var(--mono)"></div>
+
+    <div id="predictList"></div>
+
+    <div class="sec" id="aiPredictSec" style="display:none">AI 設定分析</div>
+    <button class="btn-primary btn-green" id="aiPredictBtn" onclick="runAIPrediction()" style="display:none">
+      ⚡ AI分析を生成 (Gemini)
+    </button>
+    <div class="ai-box" id="aiPredictBox" style="display:none">
+      <div class="ai-hdr">
+        <div class="ai-badge">AI</div>
+        <div class="ai-lbl">SETTING ANALYSIS</div>
+      </div>
+      <div class="ai-text" id="aiPredictText"></div>
+    </div>
+
+    <div style="height:8px"></div>
+  </div>
+
+  <!-- ===== PAGE: 履歴 ===== -->
+  <div class="page" id="page-history">
+    <div class="sec">記録履歴 <span style="color:var(--muted);font-size:9px">— 差枚数 実績</span></div>
+    <div id="historyList"></div>
+    <div style="height:8px"></div>
+  </div>
+
+  <!-- ===== PAGE: 分析 ===== -->
+  <div class="page" id="page-analysis">
+    <div class="sec">示唆別 命中率</div>
+    <div class="card" style="margin:0 14px 8px">
+      <div class="card-body" id="hintAccuracyChart"></div>
+    </div>
+
+    <div class="sec">台別 累積差枚数 (上位10)</div>
+    <div class="card" style="margin:0 14px 8px">
+      <div class="card-body" id="machineRankChart"></div>
+    </div>
+
+    <div class="sec">統計サマリー</div>
+    <div id="analysisSummary"></div>
+
+    <div class="sec">機種別 設定傾向</div>
+    <div class="card" style="margin:0 14px 8px">
+      <div class="card-body" id="modelTrendChart"></div>
+    </div>
+
+    <div style="height:8px"></div>
+  </div>
+
+  <!-- ===== PAGE: 設定 ===== -->
+  <div class="page" id="page-settings">
+    <div class="sec">台番号 マスター</div>
+    <div style="padding:0 14px 8px;font-size:11px;color:var(--muted);line-height:1.6">
+      三ノ輪UNOの台番号と機種名を登録してください。<br>入力時のクイック選択に使われます。
+    </div>
+    <div id="machineList" style="padding:0 14px 8px"></div>
+    <div style="display:flex;gap:8px;padding:0 14px 8px">
+      <input type="text" class="inp-field" id="newMachNo" placeholder="台番号" style="width:80px;flex:none">
+      <input type="text" class="inp-field" id="newMachModel" placeholder="機種名（例: バジョクシー）" style="flex:1">
+      <button class="go-btn" onclick="addMachine()" style="white-space:nowrap">追加</button>
+    </div>
+    <button class="btn-primary" style="margin-top:8px" onclick="saveMachines()">💾 台リストを保存</button>
+    <div class="sec" style="margin-top:8px">設定示唆 判定基準</div>
+    <div class="card" style="margin:0 14px 8px">
+      <div class="card-body">
+        <div style="font-size:11px;line-height:2;color:var(--text)">
+          <div><span class="hbadge hbadge-rainbow">虹枠</span> → 設定6確定示唆（最高ランク）</div>
+          <div><span class="hbadge hbadge-gold">金枠</span> → 設定5以上示唆（高確率）</div>
+          <div><span class="hbadge hbadge-red">赤枠</span> → 設定4以上示唆（注目台）</div>
+        </div>
+        <div style="height:10px"></div>
+        <div class="inp-grp">
+          <div class="inp-lbl">高設定判定ライン（差枚数）</div>
+          <input type="number" class="inp-field" id="highSettingThreshold" value="1000" placeholder="1000">
+          <div style="font-size:9px;color:var(--muted);margin-top:3px">この枚数以上を高設定ヒット扱いにする（デフォルト: +1000枚）</div>
+        </div>
+      </div>
+    </div>
+    <div class="sec">データ管理</div>
+    <button class="btn-primary" style="background:rgba(255,64,96,0.08);border-color:rgba(255,64,96,0.4);color:var(--red)" onclick="confirmClearAll()">
+      🗑 全データ削除
+    </button>
+    <div style="height:8px"></div>
+  </div>
+
+</div>
+
+<!-- Bottom Nav -->
+<nav id="nav">
+  <button class="nav-btn active" onclick="showPage('input',this)"><span class="nav-icon">📝</span><span class="nav-lbl">入力</span></button>
+  <button class="nav-btn" onclick="showPage('predict',this)"><span class="nav-icon">🎯</span><span class="nav-lbl">予想</span></button>
+  <button class="nav-btn" onclick="showPage('history',this)"><span class="nav-icon">📊</span><span class="nav-lbl">履歴</span></button>
+  <button class="nav-btn" onclick="showPage('analysis',this)"><span class="nav-icon">📈</span><span class="nav-lbl">分析</span></button>
+  <button class="nav-btn" onclick="showPage('settings',this)"><span class="nav-icon">⚙️</span><span class="nav-lbl">設定</span></button>
+</nav>
+
+<div id="toast"></div>
+
+<!-- Machine Quick-Select Modal -->
+<div class="modal-overlay" id="machineModal" onclick="if(event.target===this)closeMachineModal()">
+  <div class="modal-sheet">
+    <div class="modal-title">
+      台を選択 / 新規追加
+      <button class="modal-close" onclick="closeMachineModal()">✕</button>
+    </div>
+    <div id="mqs-grid" class="mqs-grid"></div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">新規（リストにない台）</div>
+    <div style="display:grid;grid-template-columns:80px 1fr;gap:6px;margin-bottom:10px">
+      <input type="text" class="inp-field" id="modalNewNo" placeholder="台番号">
+      <input type="text" class="inp-field" id="modalNewModel" placeholder="機種名">
+    </div>
+    <button class="btn-primary btn-green" style="margin:0" onclick="addNewMachineFromModal()">追加</button>
+  </div>
+</div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const SERVER_URL = '';
+const STORE_KEY  = 'uno_slot';
+
+/* ===================== STATE ===================== */
+let allRecords    = [];
+let machines      = [];   // machine master [{no, model}]
+let inputMachines = [];   // current input form machines
+let threshold     = 1000; // high-setting coin threshold
+
+/* ===================== INIT ===================== */
+document.addEventListener('DOMContentLoaded', () => {
+  machines  = lsGet('machines') || [];
+  threshold = parseInt(lsGet('threshold') || '1000');
+  const th = document.getElementById('highSettingThreshold');
+  if (th) th.value = threshold;
+  setToday();
+  clockTick();
+  setInterval(clockTick, 1000);
+  loadAllData();
+});
+
+function clockTick() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
+}
+
+function setToday() {
+  const jst = new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Tokyo'}));
+  const y = jst.getFullYear();
+  const m = String(jst.getMonth()+1).padStart(2,'0');
+  const d = String(jst.getDate()).padStart(2,'0');
+  document.getElementById('inputDate').value = `${y}-${m}-${d}`;
+}
+
+/* ===================== LOCAL STORAGE ===================== */
+function lsGet(k) {
+  try { return JSON.parse(localStorage.getItem(`${STORE_KEY}_${k}`)); } catch { return null; }
+}
+function lsSet(k, v) {
+  try { localStorage.setItem(`${STORE_KEY}_${k}`, JSON.stringify(v)); } catch {}
+}
+
+/* ===================== SERVER DATA ===================== */
+async function loadAllData() {
+  try {
+    const res = await fetch(`${SERVER_URL}/api/slot/records`);
+    if (res.ok) {
+      allRecords = await res.json();
+    } else {
+      allRecords = lsGet('offline_records') || [];
+    }
+  } catch {
+    allRecords = lsGet('offline_records') || [];
+  }
+  loadInputPage();
+  buildPredictPage();
+  buildHistoryPage();
+  buildAnalysisPage();
+  buildMachineList();
+}
+
+async function saveRecord(date, data) {
+  // Try server first
+  try {
+    const res = await fetch(`${SERVER_URL}/api/slot/record`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ date, machines: data.machines, note: data.note || '' }),
+    });
+    if (res.ok) {
+      // update local cache
+      const idx = allRecords.findIndex(r => r.date === date);
+      const rec = { date, machines: data.machines, note: data.note, updatedAt: new Date().toISOString() };
+      if (idx >= 0) allRecords[idx] = rec;
+      else allRecords.unshift(rec);
+      allRecords.sort((a,b) => b.date.localeCompare(a.date));
+      lsSet('offline_records', allRecords);
+      return true;
+    }
+  } catch {}
+  // Offline fallback
+  const offline = lsGet('offline_records') || [];
+  const idx = offline.findIndex(r => r.date === date);
+  const rec = { date, machines: data.machines, note: data.note, updatedAt: new Date().toISOString() };
+  if (idx >= 0) offline[idx] = rec;
+  else offline.unshift(rec);
+  offline.sort((a,b) => b.date.localeCompare(a.date));
+  lsSet('offline_records', offline);
+  allRecords = offline;
+  return true;
+}
+
+async function deleteRecord(date) {
+  try {
+    await fetch(`${SERVER_URL}/api/slot/record`, {
+      method:'DELETE',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ date }),
+    });
+  } catch {}
+  allRecords = allRecords.filter(r => r.date !== date);
+  lsSet('offline_records', allRecords);
+}
+
+/* ===================== PAGE NAVIGATION ===================== */
+function showPage(name, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (name === 'predict')  buildPredictPage();
+  if (name === 'history')  buildHistoryPage();
+  if (name === 'analysis') buildAnalysisPage();
+  if (name === 'settings') buildMachineList();
+}
+
+/* ===================== INPUT PAGE ===================== */
+function loadInputPage() {
+  const dateVal = document.getElementById('inputDate').value;
+  const date    = dateVal.replace(/-/g,'');
+  const rec     = allRecords.find(r => r.date === date);
+  inputMachines = rec ? JSON.parse(JSON.stringify(rec.machines)) : [];
+  document.getElementById('dayNote').value = rec?.note || '';
+  renderInputMachines();
+  const delBtn = document.getElementById('deleteBtn');
+  if (delBtn) delBtn.style.display = rec ? '' : 'none';
+}
+
+function renderInputMachines() {
+  const el = document.getElementById('machineInputList');
+  if (!inputMachines.length) {
+    el.innerHTML = '<div class="empty-state">台が追加されていません。<br>「＋ 台を追加」から記録を始めてください。</div>';
+    return;
+  }
+  el.innerHTML = inputMachines.map((m, i) => buildMachineInputCard(m, i)).join('');
+}
+
+function buildMachineInputCard(m, idx) {
+  const hintTypes = ['なし','赤枠','金枠','虹枠'];
+  const hintKeys  = ['none','red','gold','rainbow'];
+  const hintEmoji = ['—','🟥','🟨','🌈'];
+  const curHint   = m.hintType || 'なし';
+  const hintBtns  = hintTypes.map((t,i) => {
+    const k = hintKeys[i];
+    const selected = curHint === t ? `sel-${k}` : '';
+    return `<button class="hint-opt ${selected}" onclick="setHintType(${idx},'${t}','${k}')">${hintEmoji[i]} ${t}</button>`;
+  }).join('');
+
+  const coinsVal = m.diffCoins != null ? m.diffCoins : '';
+  const coinsClass = coinsVal === '' ? '' : coinsVal >= 0 ? 'coins-pos' : 'coins-neg';
+
+  const hintClass = curHint === '赤枠' ? 'hint-red' : curHint === '金枠' ? 'hint-gold' : curHint === '虹枠' ? 'hint-rainbow' : '';
+
+  return `<div class="machine-card ${hintClass}" id="mc-${idx}" style="margin-bottom:8px">
+    <div class="mc-top">
+      <div class="mc-num" style="cursor:pointer" onclick="editMachineNoModel(${idx})" title="クリックして編集">
+        #${m.no||'?'}
+      </div>
+      <div class="mc-model">${m.model||'機種未設定'}</div>
+      <button class="mc-del" onclick="removeMachine(${idx})">×</button>
+    </div>
+    <div class="mc-body">
+      <div class="inp-grp" style="margin-bottom:8px">
+        <div class="inp-lbl">X示唆 枠色</div>
+        <div class="hint-sel">${hintBtns}</div>
+      </div>
+      <div class="mc-row mc-row3">
+        <div class="inp-grp">
+          <div class="inp-lbl">差枚数</div>
+          <input type="number" class="inp-field ${coinsClass}" id="coins-${idx}"
+            value="${coinsVal}" placeholder="例: +3000"
+            oninput="updateCoins(${idx},this.value)"
+            onchange="updateCoins(${idx},this.value)">
+        </div>
+        <div class="inp-grp">
+          <div class="inp-lbl">G数</div>
+          <input type="number" class="inp-field" id="games-${idx}"
+            value="${m.games||''}" placeholder="G数"
+            oninput="updateField(${idx},'games',this.value)">
+        </div>
+        <div class="inp-grp">
+          <div class="inp-lbl">推定設定</div>
+          <select class="inp-field" onchange="updateField(${idx},'estSetting',this.value)">
+            ${['-','1','2','3','4','5','6'].map(s =>
+              `<option value="${s==='—'?'':s}" ${(m.estSetting||'')===(s==='-'?'':s)?'selected':''}>${s}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="inp-grp">
+        <div class="inp-lbl">メモ</div>
+        <input type="text" class="inp-field" style="font-size:11px;font-weight:400"
+          value="${escHtml(m.note||'')}" placeholder="気になることをメモ"
+          oninput="updateField(${idx},'note',this.value)">
+      </div>
+    </div>
+  </div>`;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function setHintType(idx, type, key) {
+  inputMachines[idx].hintType = type;
+  renderInputMachines();
+}
+function updateCoins(idx, val) {
+  const n = val === '' ? null : parseInt(val);
+  inputMachines[idx].diffCoins = isNaN(n) ? null : n;
+  const el = document.getElementById(`coins-${idx}`);
+  if (el) {
+    el.className = `inp-field ${n == null ? '' : n >= 0 ? 'coins-pos' : 'coins-neg'}`;
+  }
+}
+function updateField(idx, field, val) {
+  inputMachines[idx][field] = val === '' ? null : isNaN(val) ? val : (field === 'games' ? parseInt(val) : val);
+}
+function removeMachine(idx) {
+  inputMachines.splice(idx, 1);
+  renderInputMachines();
+}
+function editMachineNoModel(idx) {
+  const m = inputMachines[idx];
+  const no    = prompt('台番号:', m.no || '');
+  if (no === null) return;
+  const model = prompt('機種名:', m.model || '');
+  if (model === null) return;
+  inputMachines[idx].no    = no.trim();
+  inputMachines[idx].model = model.trim();
+  renderInputMachines();
+}
+
+async function saveInputData() {
+  const dateVal = document.getElementById('inputDate').value;
+  if (!dateVal) { showToast('日付を選択してください', true); return; }
+  const date    = dateVal.replace(/-/g,'');
+  const note    = document.getElementById('dayNote').value;
+  const ok = await saveRecord(date, { machines: inputMachines, note });
+  if (ok) {
+    showToast('💾 保存しました');
+    buildPredictPage();
+    buildHistoryPage();
+    buildAnalysisPage();
+    document.getElementById('deleteBtn').style.display = '';
+  } else {
+    showToast('保存に失敗しました', true);
+  }
+}
+
+async function deleteInputData() {
+  if (!confirm('このデータを削除しますか？')) return;
+  const dateVal = document.getElementById('inputDate').value;
+  const date    = dateVal.replace(/-/g,'');
+  await deleteRecord(date);
+  inputMachines = [];
+  document.getElementById('dayNote').value = '';
+  renderInputMachines();
+  document.getElementById('deleteBtn').style.display = 'none';
+  showToast('削除しました');
+  buildPredictPage();
+  buildHistoryPage();
+  buildAnalysisPage();
+}
+
+/* ===================== MACHINE MODAL ===================== */
+function openMachineModal() {
+  const grid = document.getElementById('mqs-grid');
+  if (!machines.length) {
+    grid.innerHTML = '<div style="grid-column:span 3;font-size:11px;color:var(--muted);padding:8px 0">機種マスターが未登録です。<br>⚙️設定から台を登録してください。</div>';
+  } else {
+    grid.innerHTML = machines.map(m =>
+      `<div class="mqs-item" onclick="selectMachineFromModal('${escHtml(m.no)}','${escHtml(m.model)}')">
+        <div class="mqs-no">#${m.no}</div>
+        <div class="mqs-name">${m.model}</div>
+      </div>`
+    ).join('');
+  }
+  document.getElementById('modalNewNo').value    = '';
+  document.getElementById('modalNewModel').value = '';
+  document.getElementById('machineModal').classList.add('open');
+}
+function closeMachineModal() {
+  document.getElementById('machineModal').classList.remove('open');
+}
+function selectMachineFromModal(no, model) {
+  inputMachines.push({ no, model, hintType:'なし', diffCoins:null, games:null, estSetting:'', note:'' });
+  renderInputMachines();
+  closeMachineModal();
+}
+function addNewMachineFromModal() {
+  const no    = document.getElementById('modalNewNo').value.trim();
+  const model = document.getElementById('modalNewModel').value.trim();
+  if (!no) { showToast('台番号を入力してください', true); return; }
+  inputMachines.push({ no, model: model||'—', hintType:'なし', diffCoins:null, games:null, estSetting:'', note:'' });
+  renderInputMachines();
+  closeMachineModal();
+}
+
+/* ===================== PREDICTION ENGINE ===================== */
+function calcPrediction() {
+  if (!allRecords.length) return [];
+  const th = threshold;
+
+  // Per-machine stats
+  const machStats = {};
+  const hintCounts = { '赤枠':{c:0,h:0,sum:0},'金枠':{c:0,h:0,sum:0},'虹枠':{c:0,h:0,sum:0} };
+
+  allRecords.forEach((rec, dayIdx) => {
+    const weight = 1 / (dayIdx + 1); // recency weight
+    rec.machines.forEach(m => {
+      if (!m.no) return;
+      if (!machStats[m.no]) {
+        machStats[m.no] = {
+          no: m.no, model: m.model || '—',
+          totalCoins: 0, hintCount: 0, hitCount: 0,
+          records: [], score: 0, lastHint: 'なし', lastDate: '',
+        };
+      }
+      const ms = machStats[m.no];
+      if (m.diffCoins != null) {
+        ms.totalCoins += m.diffCoins;
+        if (m.diffCoins >= th) ms.hitCount++;
+      }
+      if (m.hintType && m.hintType !== 'なし') {
+        ms.hintCount++;
+        const hs = hintCounts[m.hintType];
+        if (hs) {
+          hs.c++;
+          if (m.diffCoins != null) { hs.sum += m.diffCoins; if (m.diffCoins >= th) hs.h++; }
+        }
+        // Score: 虹枠=3, 金枠=2, 赤枠=1
+        const hScore = m.hintType === '虹枠' ? 3 : m.hintType === '金枠' ? 2 : 1;
+        ms.score += hScore * weight * 4;
+      }
+      // Score from actual performance
+      if (m.diffCoins != null) {
+        const pScore = m.diffCoins >= 3000 ? 3 : m.diffCoins >= th ? 2 : m.diffCoins >= 0 ? 0.5 : -0.5;
+        ms.score += pScore * weight;
+      }
+      ms.records.push({ date: rec.date, hintType: m.hintType, diffCoins: m.diffCoins, estSetting: m.estSetting });
+      if (rec.date > ms.lastDate) { ms.lastDate = rec.date; ms.lastHint = m.hintType; ms.model = m.model || ms.model; }
+    });
+  });
+
+  // Today's record — boost for today's hints
+  const today = allRecords[0];
+  if (today) {
+    today.machines.forEach(m => {
+      if (!m.no || !machStats[m.no]) return;
+      const boost = m.hintType === '虹枠' ? 15 : m.hintType === '金枠' ? 10 : m.hintType === '赤枠' ? 7 : 0;
+      machStats[m.no].score += boost;
+      machStats[m.no].todayHint = m.hintType;
+    });
+  }
+
+  const sorted = Object.values(machStats)
+    .sort((a,b) => b.score - a.score)
+    .slice(0, 15);
+
+  return { machines: sorted, hintCounts };
+}
+
+/* ===================== PREDICT PAGE ===================== */
+function buildPredictPage() {
+  const el = document.getElementById('predictList');
+  const dateInfo = document.getElementById('predictDateInfo');
+  const aiSec = document.getElementById('aiPredictSec');
+  const aiBtn = document.getElementById('aiPredictBtn');
+
+  if (!allRecords.length) {
+    el.innerHTML = '<div class="empty-state">まだデータがありません。<br>📝入力タブからデータを入力してください。</div>';
+    if (dateInfo) dateInfo.textContent = '';
+    return;
+  }
+
+  const latest = allRecords[0];
+  const latestDate = latest.date;
+  const ld = `${latestDate.slice(0,4)}/${latestDate.slice(4,6)}/${latestDate.slice(6,8)}`;
+  if (dateInfo) {
+    const nextDate = new Date(latestDate.slice(0,4)+'-'+latestDate.slice(4,6)+'-'+latestDate.slice(6,8));
+    nextDate.setDate(nextDate.getDate()+1);
+    const nd = nextDate.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric',weekday:'short'});
+    dateInfo.innerHTML = `最新データ: <span style="color:var(--accent2)">${ld}</span> → 翌日 <span style="color:var(--gold)">${nd}</span> の予想`;
+  }
+
+  const result = calcPrediction();
+  if (!result || !result.machines.length) {
+    el.innerHTML = '<div class="empty-state">予想データが不足しています。</div>';
+    return;
+  }
+
+  const { machines: ranked } = result;
+  el.innerHTML = ranked.map((m, i) => buildPredCard(m, i)).join('');
+  if (aiSec) aiSec.style.display = '';
+  if (aiBtn) aiBtn.style.display = '';
+}
+
+function buildPredCard(m, rank) {
+  const rankCls = rank === 0 ? 'rank1' : rank === 1 ? 'rank2' : rank === 2 ? 'rank3' : '';
+  const rnCls   = rank === 0 ? 'r1' : rank === 1 ? 'r2' : rank === 2 ? 'r3' : 'rn';
+  const rankNum  = rank + 1;
+
+  const hitRate = m.hintCount > 0
+    ? Math.round(m.hitCount / m.hintCount * 100) : 0;
+
+  const avgCoins = m.records.filter(r => r.diffCoins != null).length > 0
+    ? Math.round(m.records.reduce((s,r) => s + (r.diffCoins||0), 0) / m.records.filter(r => r.diffCoins != null).length)
+    : null;
+
+  const coinsCls = avgCoins == null ? '' : avgCoins >= 0 ? 'pos' : 'neg';
+  const coinsStr = avgCoins == null ? '—' : `${avgCoins >= 0 ? '+' : ''}${avgCoins.toLocaleString()}`;
+
+  const todayHint = m.todayHint || m.lastHint;
+  const todayHintBadge = hintBadge(todayHint);
+
+  const last7 = m.records.slice(0, 7).reverse();
+  const hintHistory = last7.map(r => {
+    const hk = r.hintType === '虹枠' ? 'rainbow' : r.hintType === '金枠' ? 'gold' : r.hintType === '赤枠' ? 'red' : 'none';
+    const hasCoins = r.diffCoins != null;
+    const pos = hasCoins && r.diffCoins >= threshold;
+    return `<span title="${r.date} ${r.hintType||'—'} ${r.diffCoins!=null?r.diffCoins+'枚':''}枚数不明"
+      style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;font-size:9px;
+      ${hk==='rainbow'?'background:linear-gradient(135deg,#ff4060,#f5c518,#00ffcc);color:#000':
+        hk==='gold'?'background:rgba(245,193,24,0.3);color:#f5c518;border:1px solid rgba(245,193,24,0.5)':
+        hk==='red'?'background:rgba(255,64,96,0.2);color:#ff4060;border:1px solid rgba(255,64,96,0.4)':
+        'background:rgba(255,255,255,0.06);color:var(--muted)'}">
+      ${pos?'✓':'·'}
+    </span>`;
+  }).join('');
+
+  return `<div class="pred-card ${rankCls}">
+    <div class="pred-top">
+      <div class="pred-rank ${rnCls}">${rankNum}</div>
+      <div class="pred-main">
+        <div style="display:flex;align-items:center;gap:6px">
+          <div class="pred-no">#${m.no}</div>
+          ${todayHint !== 'なし' ? todayHintBadge : ''}
+        </div>
+        <div class="pred-model">${m.model}</div>
+      </div>
+      <div class="pred-score-bar">
+        <div class="score-val">${m.score.toFixed(1)}</div>
+        <div class="score-lbl">スコア</div>
+      </div>
+    </div>
+    <div class="pred-body">
+      <div class="pred-stats-row">
+        <div class="pred-stat">
+          <div class="ps-lbl">示唆命中率</div>
+          <div class="ps-val" style="color:${hitRate>=60?'var(--accent2)':hitRate>=40?'var(--gold)':'var(--muted)'}">${m.hintCount>0?hitRate+'%':'—'}</div>
+        </div>
+        <div class="pred-stat">
+          <div class="ps-lbl">平均差枚数</div>
+          <div class="ps-val ${coinsCls}">${coinsStr}</div>
+        </div>
+        <div class="pred-stat">
+          <div class="ps-lbl">示唆回数</div>
+          <div class="ps-val" style="color:var(--accent)">${m.hintCount}</div>
+        </div>
+        <div class="pred-stat">
+          <div class="ps-lbl">累積差枚</div>
+          <div class="ps-val" style="color:${m.totalCoins>=0?'var(--accent2)':'var(--red)'}">
+            ${m.totalCoins>=0?'+':''}${m.totalCoins.toLocaleString()}
+          </div>
+        </div>
+      </div>
+      ${last7.length ? `<div style="margin-top:8px"><div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:4px">直近7日履歴（古→新）</div><div style="display:flex;gap:3px">${hintHistory}</div></div>` : ''}
+    </div>
+  </div>`;
+}
+
+function hintBadge(type) {
+  if (type === '虹枠') return `<span class="hbadge hbadge-rainbow">🌈 虹枠</span>`;
+  if (type === '金枠') return `<span class="hbadge hbadge-gold">🟨 金枠</span>`;
+  if (type === '赤枠') return `<span class="hbadge hbadge-red">🟥 赤枠</span>`;
+  return `<span class="hbadge hbadge-none">—</span>`;
+}
+
+/* ===================== HISTORY PAGE ===================== */
+function buildHistoryPage() {
+  const el = document.getElementById('historyList');
+  if (!allRecords.length) {
+    el.innerHTML = '<div class="empty-state">履歴がありません。</div>';
+    return;
+  }
+  el.innerHTML = allRecords.map(rec => buildHistCard(rec)).join('');
+}
+
+function buildHistCard(rec) {
+  const dt   = rec.date;
+  const dStr = `${dt.slice(0,4)}/${dt.slice(4,6)}/${dt.slice(6,8)}`;
+  const dow  = ['日','月','火','水','木','金','土'][new Date(dt.slice(0,4)+'-'+dt.slice(4,6)+'-'+dt.slice(6,8)).getDay()];
+  const hintedMachines = (rec.machines||[]).filter(m => m.hintType && m.hintType !== 'なし');
+  const totalCoins = (rec.machines||[]).reduce((s,m) => s + (m.diffCoins||0), 0);
+  const machinesWithData = (rec.machines||[]).filter(m => m.diffCoins != null);
+
+  const topBadges = hintedMachines.slice(0,3).map(m => {
+    const k = m.hintType === '虹枠' ? 'rainbow' : m.hintType === '金枠' ? 'gold' : 'red';
+    return `<span class="hbadge hbadge-${k}" style="font-size:9px;padding:2px 5px">#${m.no}</span>`;
+  }).join('');
+
+  const machRows = (rec.machines||[]).map(m => {
+    if (!m.no && !m.model) return '';
+    const cc = m.diffCoins == null ? 'zero' : m.diffCoins > 0 ? 'pos' : m.diffCoins < 0 ? 'neg' : 'zero';
+    const cs = m.diffCoins == null ? '—' : `${m.diffCoins > 0 ? '+' : ''}${m.diffCoins.toLocaleString()}枚`;
+    const hk = m.hintType === '虹枠' ? 'rainbow' : m.hintType === '金枠' ? 'gold' : m.hintType === '赤枠' ? 'red' : 'none';
+    return `<div class="hist-machine-row">
+      <span class="hbadge hbadge-${hk}" style="font-size:9px;padding:1px 5px;flex-shrink:0">${m.hintType||'—'}</span>
+      <span class="hm-no">#${m.no||'?'}</span>
+      <span class="hm-model">${m.model||'—'}</span>
+      ${m.estSetting ? `<span style="font-size:10px;color:var(--gold);font-family:var(--mono);flex-shrink:0">設定${m.estSetting}</span>` : ''}
+      <span class="hm-coins ${cc}">${cs}</span>
+    </div>`;
+  }).filter(Boolean).join('');
+
+  const totalCls = totalCoins > 0 ? 'pos' : totalCoins < 0 ? 'neg' : 'zero';
+  const totalStr = machinesWithData.length ? `${totalCoins > 0 ? '+' : ''}${totalCoins.toLocaleString()}枚` : '未集計';
+
+  return `<div class="hist-card">
+    <div class="hist-hdr">
+      <div>
+        <span class="hist-date">${dStr}</span>
+        <span class="hist-day" style="margin-left:4px">(${dow})</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${topBadges}
+        <span class="hm-coins ${totalCls}" style="font-size:12px">${totalStr}</span>
+      </div>
+    </div>
+    ${rec.note ? `<div style="font-size:11px;color:var(--muted);padding:0 12px 6px;font-style:italic">${escHtml(rec.note)}</div>` : ''}
+    <div class="hist-machines">${machRows}</div>
+  </div>`;
+}
+
+/* ===================== ANALYSIS PAGE ===================== */
+function buildAnalysisPage() {
+  buildHintAccuracyChart();
+  buildMachineRankChart();
+  buildAnalysisSummary();
+  buildModelTrendChart();
+}
+
+function buildHintAccuracyChart() {
+  const el = document.getElementById('hintAccuracyChart');
+  const th = threshold;
+  const stats = { '虹枠':{c:0,h:0,sum:0,color:'linear-gradient(90deg,#ff4060,#f5c518,#00ffcc)'},
+                   '金枠':{c:0,h:0,sum:0,color:'rgba(245,193,24,0.6)'},
+                   '赤枠':{c:0,h:0,sum:0,color:'rgba(255,64,96,0.6)'},
+                   'なし':{c:0,h:0,sum:0,color:'rgba(78,106,136,0.4)'} };
+
+  allRecords.forEach(rec => {
+    (rec.machines||[]).forEach(m => {
+      const ht = m.hintType || 'なし';
+      if (!stats[ht]) return;
+      stats[ht].c++;
+      if (m.diffCoins != null) {
+        stats[ht].sum += m.diffCoins;
+        if (m.diffCoins >= th) stats[ht].h++;
+      }
+    });
+  });
+
+  const types = ['虹枠','金枠','赤枠','なし'];
+  const maxRate = Math.max(...types.map(t => stats[t].c > 0 ? stats[t].h / stats[t].c * 100 : 0), 1);
+
+  el.innerHTML = types.map(t => {
+    const s = stats[t];
+    if (s.c === 0) return `<div class="rb-row"><div class="rb-lbl">${t}</div><div class="rb-track" style="background:rgba(255,255,255,0.04)"><div class="rb-fill" style="width:0%;background:var(--border)"></div></div><div class="rb-val" style="color:var(--muted)">データなし</div></div>`;
+    const rate = Math.round(s.h / s.c * 100);
+    const avg  = s.c > 0 ? Math.round(s.sum / s.c) : 0;
+    const w    = Math.round(rate / maxRate * 100);
+    const avgStr = `${avg >= 0 ? '+' : ''}${avg.toLocaleString()}枚`;
+    const col  = s.color;
+    return `<div class="rb-row">
+      <div class="rb-lbl">${t}</div>
+      <div class="rb-track">
+        <div class="rb-fill" style="width:${w}%;background:${col}">
+          <span class="rb-fill-lbl">${rate}%</span>
+        </div>
+      </div>
+      <div class="rb-val" style="color:${avg>=0?'var(--accent2)':'var(--red)'}">${avgStr} (${s.c}件)</div>
+    </div>`;
+  }).join('') + `<div style="font-size:9px;color:var(--muted);margin-top:8px;font-family:var(--mono)">判定ライン: 差枚数 +${th.toLocaleString()}枚以上 = ヒット</div>`;
+}
+
+function buildMachineRankChart() {
+  const el = document.getElementById('machineRankChart');
+  const machCoins = {};
+  allRecords.forEach(rec => {
+    (rec.machines||[]).forEach(m => {
+      if (!m.no || m.diffCoins == null) return;
+      if (!machCoins[m.no]) machCoins[m.no] = { no: m.no, model: m.model||'—', total: 0, count: 0 };
+      machCoins[m.no].total += m.diffCoins;
+      machCoins[m.no].count++;
+    });
+  });
+  const sorted = Object.values(machCoins).sort((a,b) => b.total - a.total).slice(0, 10);
+  if (!sorted.length) { el.innerHTML = '<div style="color:var(--muted);font-size:11px">データがありません</div>'; return; }
+  const maxAbs = Math.max(...sorted.map(m => Math.abs(m.total)), 1);
+  el.innerHTML = sorted.map(m => {
+    const pct  = Math.round(Math.abs(m.total) / maxAbs * 100);
+    const pos  = m.total >= 0;
+    const col  = pos ? 'rgba(0,255,204,0.5)' : 'rgba(255,64,96,0.5)';
+    const valStr = `${pos?'+':''}${m.total.toLocaleString()}枚`;
+    return `<div class="rb-row">
+      <div class="rb-lbl" style="width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="#${m.no} ${m.model}">#${m.no}</div>
+      <div class="rb-track">
+        <div class="rb-fill" style="width:${pct}%;background:${col}">
+          <span class="rb-fill-lbl" style="font-size:9px">${m.model}</span>
+        </div>
+      </div>
+      <div class="rb-val" style="color:${pos?'var(--accent2)':'var(--red)'}">${valStr}</div>
+    </div>`;
+  }).join('');
+}
+
+function buildAnalysisSummary() {
+  const el = document.getElementById('analysisSummary');
+  const th = threshold;
+  let totalMachDays = 0, hintedDays = 0, hitCount = 0, totalCoins = 0;
+  let maxCoins = -Infinity, maxCoinsDate = '';
+  let rainbowCount = 0, goldCount = 0, redCount = 0;
+
+  allRecords.forEach(rec => {
+    let dayHinted = false;
+    (rec.machines||[]).forEach(m => {
+      totalMachDays++;
+      if (m.diffCoins != null) totalCoins += m.diffCoins;
+      if (m.hintType === '虹枠') rainbowCount++;
+      else if (m.hintType === '金枠') goldCount++;
+      else if (m.hintType === '赤枠') redCount++;
+      if (m.hintType && m.hintType !== 'なし') { dayHinted = true; }
+      if (m.diffCoins != null && m.diffCoins >= th) hitCount++;
+      if (m.diffCoins != null && m.diffCoins > maxCoins) { maxCoins = m.diffCoins; maxCoinsDate = rec.date; }
+    });
+    if (dayHinted) hintedDays++;
+  });
+
+  const hitRate = totalMachDays > 0 ? Math.round(hitCount / totalMachDays * 100) : 0;
+  const maxCoinsStr = maxCoins === -Infinity ? '—' : `+${maxCoins.toLocaleString()}`;
+  const maxCoinsDStr = maxCoinsDate ? `${maxCoinsDate.slice(4,6)}/${maxCoinsDate.slice(6,8)}` : '';
+
+  el.innerHTML = `
+    <div class="stats-row stats-4" style="margin-bottom:0">
+      <div class="stat-box">
+        <div class="stat-lbl">記録日数</div>
+        <div class="stat-val gold">${allRecords.length}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-lbl">ヒット率</div>
+        <div class="stat-val pos">${hitRate}%</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-lbl">最大差枚</div>
+        <div class="stat-val pos" style="font-size:12px">${maxCoinsStr}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-lbl">示唆合計</div>
+        <div class="stat-val" style="color:var(--purple)">${rainbowCount+goldCount+redCount}</div>
+      </div>
+    </div>
+    <div class="stats-row stats-3">
+      <div class="stat-box">
+        <div class="stat-lbl">🌈 虹枠</div>
+        <div class="stat-val" style="color:#fff">${rainbowCount}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-lbl">🟨 金枠</div>
+        <div class="stat-val gold">${goldCount}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-lbl">🟥 赤枠</div>
+        <div class="stat-val" style="color:var(--red)">${redCount}</div>
+      </div>
+    </div>`;
+}
+
+function buildModelTrendChart() {
+  const el = document.getElementById('modelTrendChart');
+  const th = threshold;
+  const modelStats = {};
+  allRecords.forEach(rec => {
+    (rec.machines||[]).forEach(m => {
+      const model = m.model || '不明';
+      if (!modelStats[model]) modelStats[model] = { model, count:0, hits:0, totalCoins:0 };
+      modelStats[model].count++;
+      if (m.diffCoins != null) {
+        modelStats[model].totalCoins += m.diffCoins;
+        if (m.diffCoins >= th) modelStats[model].hits++;
+      }
+    });
+  });
+  const sorted = Object.values(modelStats).sort((a,b) => b.count - a.count).slice(0,8);
+  if (!sorted.length) { el.innerHTML = '<div style="color:var(--muted);font-size:11px">データがありません</div>'; return; }
+  el.innerHTML = sorted.map(m => {
+    const rate = m.count > 0 ? Math.round(m.hits / m.count * 100) : 0;
+    const avg  = m.count > 0 ? Math.round(m.totalCoins / m.count) : 0;
+    const rateBar = `<div style="flex:1;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden"><div style="width:${rate}%;height:100%;background:${rate>=60?'var(--accent2)':rate>=40?'var(--gold)':'rgba(255,255,255,0.2)'};border-radius:4px"></div></div>`;
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="font-size:11px;width:90px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.model}</div>
+      ${rateBar}
+      <div style="font-size:10px;font-family:var(--mono);min-width:48px;text-align:right;color:${rate>=50?'var(--accent2)':'var(--muted)'}">${rate}%</div>
+      <div style="font-size:10px;font-family:var(--mono);min-width:64px;text-align:right;color:${avg>=0?'var(--accent2)':'var(--red)'}">${avg>=0?'+':''}${avg.toLocaleString()}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ===================== SETTINGS PAGE ===================== */
+function buildMachineList() {
+  const el = document.getElementById('machineList');
+  if (!machines.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:8px 0">台が登録されていません</div>';
+    return;
+  }
+  el.innerHTML = machines.map((m, i) =>
+    `<div class="mach-row">
+      <span class="mach-no">#${m.no}</span>
+      <span class="mach-model">${m.model}</span>
+      <button class="mach-del" onclick="removeMachineFromList(${i})">×</button>
+    </div>`
+  ).join('');
+}
+function addMachine() {
+  const no    = document.getElementById('newMachNo').value.trim();
+  const model = document.getElementById('newMachModel').value.trim();
+  if (!no || !model) { showToast('台番号と機種名を入力してください', true); return; }
+  if (machines.find(m => m.no === no)) { showToast('その台番号はすでに登録されています', true); return; }
+  machines.push({ no, model });
+  machines.sort((a,b) => parseInt(a.no)||0 - parseInt(b.no)||0);
+  document.getElementById('newMachNo').value    = '';
+  document.getElementById('newMachModel').value = '';
+  buildMachineList();
+}
+function removeMachineFromList(i) {
+  machines.splice(i, 1);
+  buildMachineList();
+}
+function saveMachines() {
+  lsSet('machines', machines);
+  const th = parseInt(document.getElementById('highSettingThreshold').value) || 1000;
+  threshold = th;
+  lsSet('threshold', String(th));
+  showToast('設定を保存しました');
+  buildAnalysisPage();
+  buildPredictPage();
+}
+
+/* ===================== AI PREDICTION ===================== */
+async function runAIPrediction() {
+  const btn = document.getElementById('aiPredictBtn');
+  const box = document.getElementById('aiPredictBox');
+  const txt = document.getElementById('aiPredictText');
+  if (!btn || !box || !txt) return;
+
+  btn.disabled = true;
+  box.style.display = '';
+  txt.className = 'ai-text loading';
+  txt.textContent = '分析中...';
+
+  const result = calcPrediction();
+  if (!result) { txt.className='ai-text'; txt.textContent='データ不足です。'; btn.disabled=false; return; }
+
+  const { machines: ranked, hintCounts } = result;
+  const recent7 = allRecords.slice(0, 7);
+
+  // Build summary for AI
+  const hintSummary = Object.entries(hintCounts).map(([k, v]) =>
+    `${k}: ${v.c}件 ヒット率${v.c>0?Math.round(v.h/v.c*100):0}% 平均${v.c>0?Math.round(v.sum/v.c):0}枚`
+  ).join(' / ');
+
+  const topMachSummary = ranked.slice(0,5).map(m =>
+    `台#${m.no}(${m.model}) 累積${m.totalCoins}枚 示唆${m.hintCount}回 今日${m.todayHint||m.lastHint}`
+  ).join('\n');
+
+  const recentDays = recent7.map(rec => {
+    const ht = (rec.machines||[]).filter(m=>m.hintType!=='なし').map(m=>`#${m.no}:${m.hintType}`).join(',');
+    const coins = (rec.machines||[]).filter(m=>m.diffCoins!=null).map(m=>`#${m.no}:${m.diffCoins>0?'+':''}${m.diffCoins}`).join(',');
+    return `${rec.date}:[示唆]${ht||'なし'} [差枚]${coins||'未集計'}`;
+  }).join('\n');
+
+  const prompt = `あなたはパチスロ設定分析の専門家です。
+三ノ輪UNOスロットのX（旧Twitter）示唆データと差枚数の分析を行い、翌日の高設定台予想を行ってください。
+
+【示唆種別 命中率サマリー】
+${hintSummary}
+
+【スコア上位台（予想候補）】
+${topMachSummary}
+
+【直近7日の示唆・差枚数履歴】
+${recentDays}
+
+【判定基準】
+- 差枚数 +${threshold}枚以上を高設定ヒットとみなす
+- 虹枠 > 金枠 > 赤枠 の順に高設定示唆が強い
+
+以下の形式でJSONを返してください：
+{
+  "summary": "全体の傾向を2〜3文で",
+  "topPicks": [
+    {"no": "台番号", "model": "機種名", "reason": "注目理由", "confidence": "高/中/低"}
+  ],
+  "patterns": "最近のパターンや特徴（曜日傾向・台の周期など）",
+  "advice": "明日の立ち回りアドバイス"
+}`;
+
+  try {
+    const res = await fetch(`${SERVER_URL}/api/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, cacheKey: `slot_pred_${allRecords[0]?.date||''}` }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const text = data.content?.[0]?.text || '';
+    const parsed = JSON.parse(text);
+    renderAIPrediction(parsed);
+  } catch (e) {
+    txt.className = 'ai-text';
+    txt.innerHTML = `<span style="color:var(--red)">AI分析エラー: ${escHtml(e.message)}</span><br><span style="color:var(--muted);font-size:10px">GEMINI_API_KEYが設定されているか確認してください。</span>`;
+  }
+  btn.disabled = false;
+}
+
+function renderAIPrediction(data) {
+  const txt = document.getElementById('aiPredictText');
+  let html = '';
+  if (data.summary) html += `<div style="margin-bottom:10px;line-height:1.8">${escHtml(data.summary)}</div>`;
+  if (data.topPicks && data.topPicks.length) {
+    html += `<div style="font-size:10px;color:var(--gold);font-family:var(--mono);font-weight:700;letter-spacing:0.1em;margin-bottom:6px">🎰 注目台</div>`;
+    html += data.topPicks.map(p => {
+      const confColor = p.confidence === '高' ? 'var(--accent2)' : p.confidence === '中' ? 'var(--gold)' : 'var(--muted)';
+      return `<div style="background:var(--bg3);border-radius:6px;padding:8px 10px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+          <span style="font-family:var(--mono);font-weight:700;color:var(--accent2)">台#${escHtml(p.no)} ${escHtml(p.model||'')}</span>
+          <span style="font-size:10px;font-family:var(--mono);color:${confColor}">確度: ${escHtml(p.confidence)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text);line-height:1.5">${escHtml(p.reason)}</div>
+      </div>`;
+    }).join('');
+  }
+  if (data.patterns) html += `<div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.6"><div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:4px">PATTERN</div>${escHtml(data.patterns)}</div>`;
+  if (data.advice)   html += `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,180,255,0.06);border:1px solid rgba(0,180,255,0.2);border-radius:6px;font-size:11px;line-height:1.6"><div style="font-size:9px;color:var(--accent);font-family:var(--mono);margin-bottom:4px">ADVICE</div>${escHtml(data.advice)}</div>`;
+  txt.className = 'ai-text';
+  txt.innerHTML = html;
+}
+
+/* ===================== MISC ===================== */
+function confirmClearAll() {
+  if (!confirm('全データを削除しますか？この操作は取り消せません。')) return;
+  allRecords = [];
+  lsSet('offline_records', []);
+  inputMachines = [];
+  renderInputMachines();
+  buildPredictPage();
+  buildHistoryPage();
+  buildAnalysisPage();
+  showToast('全データを削除しました');
+  // Try server cleanup
+  allRecords.forEach(r => deleteRecord(r.date).catch(()=>{}));
+}
+
+function showToast(msg, isErr) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = isErr ? 'err' : '';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+</script>
+</body>
+</html>

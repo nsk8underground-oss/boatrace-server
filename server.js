@@ -699,9 +699,74 @@ app.post('/api/predict', async (req, res) => {
   }
 });
 
+// ===== SLOT APIs (三ノ輪UNO) =====
+async function slotGet(date) {
+  const raw = await redisCmd('GET', `slot:daily:${date}`);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+async function slotSet(date, data) {
+  await redisCmd('SET', `slot:daily:${date}`, JSON.stringify(data));
+  await redisCmd('SADD', 'slot:dates', date);
+}
+
+app.get('/api/slot/records', async (req, res) => {
+  try {
+    const raw = await redisCmd('SMEMBERS', 'slot:dates');
+    const dates = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+    const sorted = dates.sort().reverse().slice(0, 90);
+    const records = await Promise.all(sorted.map(async d => {
+      const r = await slotGet(d);
+      return r ? { date: d, ...r } : { date: d, machines: [] };
+    }));
+    res.json(records);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/slot/record', async (req, res) => {
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: 'date required' });
+  try {
+    const data = await slotGet(date);
+    res.json(data || { date, machines: [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/slot/record', async (req, res) => {
+  const { date, machines, note } = req.body;
+  if (!date || !Array.isArray(machines)) return res.status(400).json({ error: 'date and machines required' });
+  try {
+    await slotSet(date, { machines, note: note || '', updatedAt: new Date().toISOString() });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/slot/record', async (req, res) => {
+  const { date } = req.body;
+  if (!date) return res.status(400).json({ error: 'date required' });
+  try {
+    await redisCmd('DEL', `slot:daily:${date}`);
+    await redisCmd('SREM', 'slot:dates', date);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ルートアクセスでダッシュボードを返す
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// 三ノ輪UNO スロットダッシュボード
+app.get('/slot', (req, res) => {
+  res.sendFile(path.join(__dirname, 'minowa_uno_slot.html'));
 });
 
 if (require.main === module) {
