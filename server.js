@@ -419,30 +419,47 @@ function parseRaceResult(html) {
   const payouts = [];
   const PAYOUT_TYPES = ['3連単','3連複','2連単','2連複','拡連複','単勝','複勝'];
 
-  $('tbody tr').each((_, tr) => {
+  $('tr').each((_, tr) => {
     const cells = $(tr).find('td');
     if (!cells.length) return;
-    const t0 = cells.eq(0).text().trim();
 
-    // Finishing order rows: "1" or "1着"
-    const rankM = t0.match(/^(\d)着?$/);
-    if (rankM) {
+    // 着順行: "1着" or "1" が最初のセル
+    for (let ci = 0; ci < Math.min(cells.length, 3); ci++) {
+      const t = cells.eq(ci).text().trim();
+      const rankM = t.match(/^([1-6])着?$/);
+      if (!rankM) continue;
       const rank = parseInt(rankM[1]);
-      const lane = parseInt(cells.eq(1).text().replace(/\s+/g,''));
-      if (rank >= 1 && rank <= 6 && lane >= 1 && lane <= 6) order.push({ rank, lane });
-      return;
+      // 次のセルから艇番を探す（1〜6の数字単独のセル）
+      for (let li = ci + 1; li < Math.min(cells.length, ci + 4); li++) {
+        const lv = parseInt(cells.eq(li).text().replace(/\s+/g, ''));
+        if (lv >= 1 && lv <= 6) { order.push({ rank, lane: lv }); break; }
+      }
+      break;
     }
 
-    // Payout rows
-    if (PAYOUT_TYPES.includes(t0)) {
-      const combo = cells.eq(1).text().replace(/\s+/g,'');
-      const payRaw = cells.eq(2).text().replace(/[,¥円\s]/g,'');
-      const pay = parseInt(payRaw);
-      if (combo && !isNaN(pay)) payouts.push({ type: t0, combo, pay });
+    // 払戻行: 式別名が最初（またはrowspanで継続）のセル
+    for (let ci = 0; ci < Math.min(cells.length, 2); ci++) {
+      const t0 = cells.eq(ci).text().trim();
+      if (!PAYOUT_TYPES.includes(t0)) continue;
+      // combo と pay を次のセルから探す
+      const remaining = cells.toArray().slice(ci + 1);
+      for (let i = 0; i < remaining.length - 1; i++) {
+        const combo  = $(remaining[i]).text().replace(/\s+/g, '');
+        const payRaw = $(remaining[i + 1]).text().replace(/[,¥円\s]/g, '');
+        const pay    = parseInt(payRaw);
+        if (combo && !isNaN(pay) && pay > 0) {
+          payouts.push({ type: t0, combo, pay });
+          break;
+        }
+      }
+      break;
     }
   });
 
-  return { order, payouts, fetchedAt: new Date().toISOString() };
+  // 重複除去（着順）
+  const seen = new Set();
+  const uniqOrder = order.filter(o => { const k = o.rank; if (seen.has(k)) return false; seen.add(k); return true; });
+  return { order: uniqOrder.sort((a,b) => a.rank - b.rank), payouts, fetchedAt: new Date().toISOString() };
 }
 
 app.get('/api/result', async (req, res) => {
