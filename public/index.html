@@ -886,7 +886,10 @@ function buildSTViz() {
 
   var hasEx = exData.some(function(d) { return d.et != null; });
   var hasST = exData.some(function(d) { return d.st != null; });
-  if (!hasEx && !hasST) { el.innerHTML = ''; return; }
+  if (!hasEx && !hasST) {
+    el.innerHTML = '<div style="padding:6px 14px 10px;font-size:11px;color:var(--muted);font-family:var(--mono)">⟳ 展示更新ボタンを押すと表示されます</div>';
+    return;
+  }
 
   var html = '<div style="padding:0 14px 10px">';
 
@@ -1357,7 +1360,7 @@ function saveEx(lane) {
   const st = document.getElementById('st'+lane)?.value||'';
   saveExhibit(currentRace, lane, et, st);
   debouncedToast();
-  if (document.getElementById('page-stats').classList.contains('active') && raceData) buildStatsList(raceData.racers);
+  if (raceData) updateStatsWeather();
 }
 function toggleFixed(lane) {
   fixedFirst = fixedFirst === lane ? null : lane;
