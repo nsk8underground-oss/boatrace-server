@@ -518,7 +518,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v2.9';
+const APP_VERSION = 'v3.0';
 document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
@@ -1522,6 +1522,29 @@ function buildStatsList(racers) {
 }
 
 /* ======================== AI PREDICT ======================== */
+// 混雑(429)時はカウントダウン表示して1回だけ自動再試行
+async function fetchPredictWithRetry(payload, onWait) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch(`${SERVER_URL}/api/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30000),
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (res.status === 429 && data.quota && attempt === 0) {
+      let wait = Math.min(Math.max(parseInt(data.retryAfter) || 60, 5), 90);
+      for (; wait > 0; wait--) {
+        if (onWait) onWait(wait);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      continue;
+    }
+    return { ok: res.ok, data };
+  }
+}
+
 async function runPredict() {
   if (!raceData || !raceData.racers || raceData.racers.length === 0) {
     alert('先にレースデータを取得してください（↻ 取得ボタン）');
@@ -1602,18 +1625,20 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
   try {
     const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
     const [predictResp, odds3tResp, odds2tResp, odds3fResp] = await Promise.allSettled([
-      fetch('/api/predict', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, cacheKey }),
+      fetchPredictWithRetry({ prompt, cacheKey }, s => {
+        aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
       }),
       fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
       fetch(`${SERVER_URL}/api/odds2t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
       fetch(`${SERVER_URL}/api/odds3f?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
     ]);
     if (predictResp.status === 'rejected') throw new Error(predictResp.reason?.message || 'APIエラー');
-    const data = await predictResp.value.json();
-    if (!predictResp.value.ok || data.error) throw new Error(data.error || 'APIエラー');
+    const data = predictResp.value.data;
+    if (!predictResp.value.ok || data.error) {
+      throw new Error(data.quota
+        ? 'AI予想が混み合っています。1分ほど待ってからもう一度お試しください（同じレースの2回目以降はキャッシュから即表示されます）'
+        : (data.error || 'APIエラー'));
+    }
     document.getElementById('cacheTag').style.display = data.cached ? 'inline' : 'none';
     let odds3t = {}, odds2t = {}, odds3f = {};
     if (odds3tResp.status === 'fulfilled') { try { odds3t = (await odds3tResp.value.json()).odds || {}; } catch {} }
@@ -1774,13 +1799,11 @@ ${lines}
 }`;
 
   try {
-    const res = await fetch(`${SERVER_URL}/api/predict`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, cacheKey: `pick_${VENUE_JCD}_${document.getElementById('dateInput').value.replace(/-/g,'')}_${currentRace}_${combo}` }),
-      signal: AbortSignal.timeout(25000),
-    });
-    const data = await res.json();
+    const { ok, data } = await fetchPredictWithRetry(
+      { prompt, cacheKey: `pick_${VENUE_JCD}_${document.getElementById('dateInput').value.replace(/-/g,'')}_${currentRace}_${combo}` },
+      s => { box.innerHTML = `<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">⏳ AI分析が混み合っています。残り${s}秒で自動再試行…</div>`; }
+    );
+    if (!ok && data.quota) throw new Error('AI分析が混み合っています。1分ほど待ってからもう一度お試しください');
     if (data.error) throw new Error(data.error);
     const text = data.content?.[0]?.text || '';
     let r;

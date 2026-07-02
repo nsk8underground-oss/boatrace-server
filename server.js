@@ -913,7 +913,16 @@ app.post('/api/predict', async (req, res) => {
     });
     clearTimeout(timer);
     const data = await response.json();
-    if (data.error) return res.status(500).json({ error: `Gemini: ${data.error.message}` });
+    if (data.error) {
+      const msg = data.error.message || '';
+      // 無料枠のレート制限（429/RESOURCE_EXHAUSTED）: 待ち時間を抽出してクライアントに返す
+      if (response.status === 429 || data.error.status === 'RESOURCE_EXHAUSTED' || /quota/i.test(msg)) {
+        const m = msg.match(/retry in ([\d.]+)s/i);
+        const retryAfter = m ? Math.ceil(parseFloat(m[1])) : 60;
+        return res.status(429).json({ error: 'AI予想が混み合っています（無料APIの利用上限）', quota: true, retryAfter });
+      }
+      return res.status(500).json({ error: `Gemini: ${msg}` });
+    }
     const text = data.candidates?.[0]?.content?.parts
       ?.filter(p => !p.thought)
       .map(p => p.text || '').join('') || '';
