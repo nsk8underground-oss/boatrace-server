@@ -34,6 +34,8 @@ async function redisCmd(...args) {
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'boatrace2026';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+// AI予想モデル: 先頭から順に試し、無料枠上限なら次へ（モデルごとに枠が独立）
+const PREDICT_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'];
 
 // パスワード保護（全ページに適用）
 app.use(basicAuth({
@@ -870,39 +872,51 @@ app.get('/api/debug-result', async (req, res) => {
   }
 });
 
-// AI診断: ブラウザで /api/ai-health を開くとGemini APIの状態が分かる
+// AI診断: ブラウザで /api/ai-health を開くと全モデルの状態が分かる
 app.get('/api/ai-health', async (req, res) => {
   if (!GEMINI_API_KEY) return res.json({ ok: false, cause: 'GEMINI_API_KEY未設定', fix: 'Vercelの環境変数にGEMINI_API_KEYを設定してください' });
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: '{"ok":true} とだけJSONで回答してください' }] }],
-        generationConfig: { maxOutputTokens: 50, responseMimeType: 'application/json', thinkingConfig: { thinkingBudget: 0 } },
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    const d = await r.json();
-    if (d.error) {
-      const msg = d.error.message || '';
-      let cause = 'その他のエラー', fix = 'エラー内容を確認してください';
-      if (/api key|API_KEY/i.test(msg)) { cause = 'APIキーが無効'; fix = 'Google AI Studioで新しいキーを発行し、Vercelの環境変数 GEMINI_API_KEY を更新して再デプロイ'; }
-      else if (/quota/i.test(msg)) {
-        const m = msg.match(/retry in ([\d.]+)s/i);
-        const sec = m ? Math.ceil(parseFloat(m[1])) : 0;
-        cause = sec > 300 ? '1日の無料枠(250回)を使い切り' : '1分あたりの無料枠上限';
-        fix = sec > 300 ? '日本時間の夕方頃にリセット。またはGoogle AI Studioで従量課金を有効化' : '1分ほど待って再試行';
+  const models = [];
+  for (const model of PREDICT_MODELS) {
+    try {
+      const generationConfig = { maxOutputTokens: 50, responseMimeType: 'application/json' };
+      if (model.startsWith('gemini-2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: '{"ok":true} とだけJSONで回答してください' }] }],
+          generationConfig,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const d = await r.json();
+      if (d.error) {
+        const msg = d.error.message || '';
+        let cause = 'その他のエラー';
+        if (/api key|API_KEY/i.test(msg)) cause = 'APIキーが無効';
+        else if (/quota/i.test(msg)) {
+          const m = msg.match(/retry in ([\d.]+)s/i);
+          const sec = m ? Math.ceil(parseFloat(m[1])) : 0;
+          cause = (sec > 300 || /per day|PerDay/i.test(msg)) ? '1日の無料枠を使い切り' : '1分あたりの無料枠上限';
+        }
+        models.push({ model, ok: false, cause, geminiError: msg.slice(0, 200) });
+      } else {
+        models.push({ model, ok: true });
       }
-      return res.json({ ok: false, cause, fix, httpStatus: r.status, geminiError: msg.slice(0, 300) });
+    } catch (e) {
+      models.push({ model, ok: false, cause: '接続エラー', detail: e.message });
     }
-    return res.json({ ok: true, message: 'Gemini APIは正常に動作しています', model: 'gemini-2.5-flash' });
-  } catch (e) {
-    res.json({ ok: false, cause: '接続エラー', detail: e.message });
   }
+  const anyOk = models.some(m => m.ok);
+  res.json({
+    ok: anyOk,
+    message: anyOk ? '利用可能なモデルがあります。AI予想は動作するはずです' : '全モデルが利用不可です',
+    fix: anyOk ? undefined : 'APIキー無効ならVercelの環境変数を更新。無料枠切れなら夕方のリセット待ちか従量課金の有効化',
+    models,
+  });
 });
 
 // AI予想エンドポイント（Gemini）
@@ -929,73 +943,84 @@ app.post('/api/predict', async (req, res) => {
   }
 
   try {
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 25000);
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 4096, // 8点×2+シナリオ2本。少なすぎるとJSONが途中で切れて全滅する
-          responseMimeType: 'application/json',
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
-      signal: controller.signal,
+    // モデルごとに無料枠が独立しているため、混雑時は別モデルへ自動フォールバック
+    let lastQuota = null;
+    for (const model of PREDICT_MODELS) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const generationConfig = {
+        temperature: 0.7,
+        maxOutputTokens: 4096, // 8点×2+シナリオ2本。少なすぎるとJSONが途中で切れて全滅する
+        responseMimeType: 'application/json',
+      };
+      // thinkingConfig は 2.5系のみ対応（2.0系に送ると400エラー）
+      if (model.startsWith('gemini-2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 25000);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const data = await response.json();
+
+      if (data.error) {
+        const msg = data.error.message || '';
+        // 無料枠のレート制限: 次のモデルで再挑戦
+        if (response.status === 429 || data.error.status === 'RESOURCE_EXHAUSTED' || /quota/i.test(msg)) {
+          const m = msg.match(/retry in ([\d.]+)s/i);
+          const retryAfter = m ? Math.ceil(parseFloat(m[1])) : 60;
+          const daily = retryAfter > 300 || /per day|PerDay/i.test(msg);
+          lastQuota = { retryAfter, daily };
+          continue;
+        }
+        // モデル廃止・未対応も次のモデルへ
+        if (response.status === 404 || /not found|not supported/i.test(msg)) continue;
+        if (/api key|API_KEY/i.test(msg)) {
+          return res.status(500).json({ error: 'Gemini APIキーが無効です。Vercelの環境変数 GEMINI_API_KEY に正しいキーが設定されているか確認してください' });
+        }
+        return res.status(500).json({ error: `Gemini: ${msg}` });
+      }
+
+      const text = data.candidates?.[0]?.content?.parts
+        ?.filter(p => !p.thought)
+        .map(p => p.text || '').join('') || '';
+      if (!text) return res.status(500).json({ error: 'Geminiから空のレスポンスが返りました' });
+      // JSONとして壊れていたら {} の範囲を抽出して修復を試みる
+      let jsonText = text;
+      try {
+        JSON.parse(jsonText);
+      } catch {
+        const jm = text.match(/\{[\s\S]*\}/);
+        jsonText = null;
+        if (jm) { try { JSON.parse(jm[0]); jsonText = jm[0]; } catch {} }
+        if (!jsonText) {
+          const reason = data.candidates?.[0]?.finishReason;
+          return res.status(500).json({
+            error: reason === 'MAX_TOKENS'
+              ? 'AIの回答が途中で切れました。もう一度お試しください'
+              : 'GeminiのレスポンスがJSON形式ではありません。もう一度お試しください',
+          });
+        }
+      }
+      const result = { content: [{ text: jsonText }], model };
+      if (cacheKey) {
+        for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
+        predictCache.set(cacheKey, { data: result, exp: Date.now() + 600000 });
+        redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '600');
+      }
+      return res.json(result);
+    }
+    // 全モデルが利用不可
+    if (!lastQuota) return res.status(500).json({ error: 'AIモデルにアクセスできませんでした。/api/ai-health で状態を確認してください' });
+    return res.status(429).json({
+      error: lastQuota.daily
+        ? '本日のAI無料枠を使い切りました。日本時間の夕方頃にリセットされます。Google AI Studioで従量課金を有効にすると解消できます'
+        : 'AI予想が混み合っています（無料APIの利用上限）',
+      quota: true, daily: !!lastQuota.daily, retryAfter: lastQuota.retryAfter || 60,
     });
-    clearTimeout(timer);
-    const data = await response.json();
-    if (data.error) {
-      const msg = data.error.message || '';
-      // 無料枠のレート制限（429/RESOURCE_EXHAUSTED）: 待ち時間を抽出してクライアントに返す
-      if (response.status === 429 || data.error.status === 'RESOURCE_EXHAUSTED' || /quota/i.test(msg)) {
-        const m = msg.match(/retry in ([\d.]+)s/i);
-        const retryAfter = m ? Math.ceil(parseFloat(m[1])) : 60;
-        // リセットまで数分以上なら「1日の無料枠切れ」— 1分待っても解消しない
-        const daily = retryAfter > 300 || /per day|PerDay/i.test(msg);
-        return res.status(429).json({
-          error: daily
-            ? '本日のAI無料枠（1日250回）を使い切りました。日本時間の夕方頃にリセットされます。Google AI Studioで従量課金を有効にすると解消できます'
-            : 'AI予想が混み合っています（無料APIの利用上限）',
-          quota: true, daily, retryAfter,
-        });
-      }
-      if (/api key|API_KEY/i.test(msg)) {
-        return res.status(500).json({ error: 'Gemini APIキーが無効です。Vercelの環境変数 GEMINI_API_KEY に正しいキーが設定されているか確認してください' });
-      }
-      return res.status(500).json({ error: `Gemini: ${msg}` });
-    }
-    const text = data.candidates?.[0]?.content?.parts
-      ?.filter(p => !p.thought)
-      .map(p => p.text || '').join('') || '';
-    if (!text) return res.status(500).json({ error: 'Geminiから空のレスポンスが返りました' });
-    // JSONとして壊れていたら {} の範囲を抽出して修復を試みる
-    let jsonText = text;
-    try {
-      JSON.parse(jsonText);
-    } catch {
-      const jm = text.match(/\{[\s\S]*\}/);
-      jsonText = null;
-      if (jm) { try { JSON.parse(jm[0]); jsonText = jm[0]; } catch {} }
-      if (!jsonText) {
-        const reason = data.candidates?.[0]?.finishReason;
-        return res.status(500).json({
-          error: reason === 'MAX_TOKENS'
-            ? 'AIの回答が途中で切れました。もう一度お試しください'
-            : 'GeminiのレスポンスがJSON形式ではありません。もう一度お試しください',
-        });
-      }
-    }
-    const result = { content: [{ text: jsonText }] };
-    if (cacheKey) {
-      for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
-      predictCache.set(cacheKey, { data: result, exp: Date.now() + 600000 });
-      redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '600');
-    }
-    res.json(result);
   } catch (e) {
     const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました(25秒)' : e.message;
     res.status(500).json({ error: msg });
