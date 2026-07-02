@@ -519,7 +519,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.1';
+const APP_VERSION = 'v3.2';
 document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
@@ -1534,8 +1534,10 @@ async function fetchPredictWithRetry(payload, onWait) {
     });
     let data = {};
     try { data = await res.json(); } catch {}
-    if (res.status === 429 && data.quota && attempt === 0) {
-      let wait = Math.min(Math.max(parseInt(data.retryAfter) || 60, 5), 90);
+    // 1分あたりの上限のみ自動再試行。1日の枠切れ(daily)は待っても無駄なので即メッセージ表示
+    const wait0 = parseInt(data.retryAfter) || 60;
+    if (res.status === 429 && data.quota && !data.daily && wait0 <= 120 && attempt === 0) {
+      let wait = Math.max(wait0, 5);
       for (; wait > 0; wait--) {
         if (onWait) onWait(wait);
         await new Promise(r => setTimeout(r, 1000));
@@ -1636,9 +1638,8 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
     if (predictResp.status === 'rejected') throw new Error(predictResp.reason?.message || 'APIエラー');
     const data = predictResp.value.data;
     if (!predictResp.value.ok || data.error) {
-      throw new Error(data.quota
-        ? 'AI予想が混み合っています。1分ほど待ってからもう一度お試しください（同じレースの2回目以降はキャッシュから即表示されます）'
-        : (data.error || 'APIエラー'));
+      // サーバーが原因別の日本語メッセージを返す（1日枠切れ/混雑/キー無効など）
+      throw new Error(data.error || 'APIエラー');
     }
     document.getElementById('cacheTag').style.display = data.cached ? 'inline' : 'none';
     let odds3t = {}, odds2t = {}, odds3f = {};
@@ -1804,8 +1805,7 @@ ${lines}
       { prompt, cacheKey: `pick_${VENUE_JCD}_${document.getElementById('dateInput').value.replace(/-/g,'')}_${currentRace}_${combo}` },
       s => { box.innerHTML = `<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">⏳ AI分析が混み合っています。残り${s}秒で自動再試行…</div>`; }
     );
-    if (!ok && data.quota) throw new Error('AI分析が混み合っています。1分ほど待ってからもう一度お試しください');
-    if (data.error) throw new Error(data.error);
+    if (!ok || data.error) throw new Error(data.error || 'APIエラー');
     const text = data.content?.[0]?.text || '';
     let r;
     try { r = JSON.parse(text); } catch { throw new Error('レスポンス解析エラー'); }
