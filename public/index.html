@@ -493,7 +493,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v2.6';
+const APP_VERSION = 'v2.7';
 document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
@@ -1131,7 +1131,7 @@ async function refreshBefore(auto = false) {
     buildStatsList(raceData.racers);
     buildMiniRacers(raceData.racers);
     buildOddsPanel();
-    if (!auto) showToast(updated > 0 ? `✅ 展示タイム ${updated}艇更新` : '展示データ未公開');
+    if (!auto) showToast(updated > 0 ? `✅ 展示タイム ${updated}艇更新` : '展示データはまだ公開されていません（展示航走後に反映されます）');
     else if (updated > 0) showToast(`✅ 展示タイム ${updated}艇自動更新`);
   } catch (e) {
     if (!auto) showToast('⚠ 展示取得失敗: ' + e.message);
@@ -1294,12 +1294,17 @@ function buildEntryList(racers) {
     document.getElementById('entryList').innerHTML = '<div class="state-box"><div class="state-sub">データを取得してください</div></div>';
     return;
   }
+  // 展示タイム最速艇を金色でハイライト
+  const exValues = racers.map(r => r.exhibitTime != null ? r.exhibitTime : (parseFloat(loadExhibit(currentRace, r.lane).exhibitTime) || null)).filter(v => v != null);
+  const bestExTime = exValues.length ? Math.min(...exValues) : null;
+
   document.getElementById('entryList').innerHTML = racers.map((r, i) => {
     const isFixed = fixedFirst === r.lane;
     const md  = loadMotor(r.lane);
     const ex  = { ...loadExhibit(currentRace, r.lane) };
     if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
     if (r.exhibitST   != null) ex.st          = r.exhibitST;
+    const isBestEx = bestExTime != null && parseFloat(ex.exhibitTime) === bestExTime;
 
     const rc  = r.allRate   >= 6.5 ? 'sm-hi' : r.allRate   >= 5.5 ? 'sm-md' : 'sm-lo';
     const lc  = r.localRate >= 6.5 ? 'sm-hi' : r.localRate >= 5.5 ? 'sm-md' : 'sm-lo';
@@ -1333,7 +1338,7 @@ function buildEntryList(racers) {
             <div class="sm-div"></div>
             <div class="sm"><div class="sm-l">F/L</div><div class="sm-v" style="color:${r.fl?.startsWith('1')?'var(--red)':'var(--muted)'}">${r.fl||'—'}</div></div>
             <div class="sm-div"></div>
-            <div class="sm"><div class="sm-l">展示タイム</div><div class="sm-v ${ex.exhibitTime?'sm-hi':'sm-lo'}">${ex.exhibitTime||'—'}</div></div>
+            <div class="sm"><div class="sm-l">展示タイム</div><div class="sm-v ${ex.exhibitTime?'sm-hi':'sm-lo'}" style="${isBestEx?'color:var(--gold);text-shadow:0 0 6px rgba(245,193,24,0.4)':''}">${ex.exhibitTime||'—'}${isBestEx?'🥇':''}</div></div>
             <div class="sm-div"></div>
             <div class="sm"><div class="sm-l">ST</div><div class="sm-v ${stC}">${ex.st?'.'+String(ex.st).replace('0.',''):'—'}</div></div>
           </div>

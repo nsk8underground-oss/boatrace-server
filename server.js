@@ -209,21 +209,42 @@ function parseRacelist(html, jcd, hd, rno) {
   };
 }
 
+// 全角数字→半角（boatrace.jpは艇番・着順に全角数字を使う）
+function normDigits(s) {
+  return String(s || '').replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+}
+
 function parseBeforeinfo(html) {
   const $ = cheerio.load(html);
   const weather = {};
 
-  // 天候: テーブルセル形式（隣接td）とテキスト形式の両方に対応
+  // boatrace.jp 実ページの気象ウィジェット（.weather1）
+  const wUnit = cls => $(`.weather1_bodyUnit.${cls} .weather1_bodyUnitLabelData`).first().text().trim();
+  {
+    const sky = $('.weather1_bodyUnit.is-weather .weather1_bodyUnitLabelTitle').first().text().trim();
+    if (sky) weather.sky = sky;
+    const wind = parseFloat(wUnit('is-wind'));   if (!isNaN(wind)) weather.wind  = wind;
+    const wtr  = parseFloat(wUnit('is-water'));  if (!isNaN(wtr))  weather.water = wtr;
+    const wave = parseFloat(wUnit('is-wave'));   if (!isNaN(wave)) weather.wave  = wave;
+    // 風向はアイコンのクラス番号（is-wind1〜16 = 北から時計回り、17 = 無風）
+    const wd = ($('.weather1_bodyUnit.is-windDirection .weather1_bodyUnitImage').attr('class') || '').match(/is-wind(\d+)/);
+    if (wd) {
+      const DIRS = ['北','北北東','北東','東北東','東','東南東','南東','南南東','南','南南西','南西','西南西','西','西北西','北西','北北西'];
+      const i = parseInt(wd[1]);
+      if (i >= 1 && i <= 16) weather.windDir = DIRS[i - 1];
+    }
+  }
+  // テーブルセル形式（label/value 隣接td）
   $('td, th').each((_, el) => {
     const label = $(el).text().trim();
     const val   = $(el).next('td').text().trim();
-    if (label === '天候' && val) weather.sky = val;
-    if (label === '風速' && val) { const n = parseFloat(val); if (!isNaN(n)) weather.wind = n; }
-    if (label === '風向' && val) weather.windDir = val;
-    if (label === '水温' && val) { const n = parseFloat(val); if (!isNaN(n)) weather.water = n; }
-    if (label === '波高' && val) { const n = parseFloat(val); if (!isNaN(n)) weather.wave = n; }
+    if (label === '天候' && val && !weather.sky) weather.sky = val;
+    if (label === '風速' && val && weather.wind == null)  { const n = parseFloat(val); if (!isNaN(n)) weather.wind = n; }
+    if (label === '風向' && val && !weather.windDir) weather.windDir = val;
+    if (label === '水温' && val && weather.water == null) { const n = parseFloat(val); if (!isNaN(n)) weather.water = n; }
+    if (label === '波高' && val && weather.wave == null)  { const n = parseFloat(val); if (!isNaN(n)) weather.wave = n; }
   });
-  // フォールバック: コロン区切りテキスト形式（0m/s・0cm は有効値なので == null で判定）
+  // フォールバック: テキスト形式（0m/s・0cm は有効値なので == null で判定）
   const bodyText = $.text();
   if (!weather.sky)          weather.sky     = (bodyText.match(/天候\s*[:：]?\s*([晴曇雨雪][^\s\d]*)/) || [])[1] || '';
   if (weather.wind == null)  weather.wind    = parseFloat((bodyText.match(/風速\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
@@ -231,35 +252,53 @@ function parseBeforeinfo(html) {
   if (weather.water == null) weather.water   = parseFloat((bodyText.match(/水温\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
   if (weather.wave == null)  weather.wave    = parseFloat((bodyText.match(/波高\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
 
-  const exhibitMap = {};
+  const entries = {};
+  const getEntry = lane => entries[lane] || (entries[lane] = { lane, course: null, exhibitTime: null, st: null });
+
+  // スタート展示テーブル（実ページ）: 表示順 = 進入コース順。艇番とSTを取得
+  $('.table1_boatImage1').each((i, el) => {
+    const lane = parseInt(normDigits($(el).find('.table1_boatImage1Number').first().text().trim()));
+    if (!(lane >= 1 && lane <= 6)) return;
+    const en = getEntry(lane);
+    en.course = i + 1;
+    const stTxt = normDigits($(el).find('.table1_boatImage1TimeInner, .table1_boatImage1Time').first().text().trim());
+    const m = stTxt.match(/F?\.(\d{2})/);
+    if (m) en.st = parseFloat('0.' + m[1]);
+  });
+
+  // 展示タイム: 艇番で始まる行から展示タイム形式（5.00〜8.49・小数2桁）の最初のセルを探す。
+  // 実ページは 枠|写真|選手名|体重|展示タイム|チルト|... の構成で列位置が変わりうるため、
+  // 固定インデックスではなく値の形式で判定する（体重52.0kg・チルト-0.5・調整重量0.0は範囲外）
   $('tr').each((_, tr) => {
     const cells = $(tr).find('td');
-    if (cells.length < 4) return;
-
-    const c0 = cells.eq(0).text().trim();
-    const lane = parseInt(c0);
+    if (cells.length < 3) return;
+    const lane = parseInt(normDigits(cells.eq(0).text().trim()));
     if (isNaN(lane) || lane < 1 || lane > 6) return;
+    if (entries[lane]?.exhibitTime != null) return;
 
-    // 列構成を自動検出:
-    //   4列: 艇番|進入|タイム|ST        → indices 0,1,2,3
-    //   5列以上: 艇番|選手名|進入|タイム|ST → indices 0,2,3,4
-    let courseIdx = 1, timeIdx = 2, stIdx = 3;
-    if (cells.length >= 5) {
-      const c1 = cells.eq(1).text().replace(/\s+/g, '').trim();
-      // c1が数字1桁（コース番号）でなければ選手名列とみなす
-      if (!/^\d$/.test(c1)) {
-        courseIdx = 2; timeIdx = 3; stIdx = 4;
+    let exhibitTime = null, courseFb = null, stFb = null;
+    for (let i = 1; i < cells.length; i++) {
+      const t = normDigits(cells.eq(i).text().replace(/\s+/g, ''));
+      if (exhibitTime == null && /^[5-8]\.\d{2}$/.test(t)) {
+        const v = parseFloat(t);
+        if (v >= 5 && v < 8.5) { exhibitTime = v; continue; }
       }
+      if (courseFb == null && i <= 2 && /^[1-6]$/.test(t)) { courseFb = parseInt(t); continue; }
+      if (stFb == null && /^F?0?\.\d{2}$/.test(t)) { const m = t.match(/\.(\d{2})$/); stFb = parseFloat('0.' + m[1]); }
     }
-
-    const course      = parseInt(cells.eq(courseIdx).text().trim()) || lane;
-    const exhibitTime = parseFloat(cells.eq(timeIdx).text().trim())  || null;
-    const st          = parseFloat(cells.eq(stIdx).text().trim())    || null;
-
-    // 有効な展示タイム（5〜8秒）が取れた行のみ採用
-    if (exhibitTime && exhibitTime > 5 && exhibitTime < 9) {
-      exhibitMap[lane] = { lane, course, exhibitTime, st };
+    if (exhibitTime != null || stFb != null) {
+      const en = getEntry(lane);
+      if (en.exhibitTime == null) en.exhibitTime = exhibitTime;
+      if (en.course == null && courseFb != null) en.course = courseFb;
+      if (en.st == null && stFb != null) en.st = stFb;
     }
+  });
+
+  const exhibitMap = {};
+  Object.values(entries).forEach(en => {
+    if (en.exhibitTime == null && en.st == null) return;
+    if (en.course == null) en.course = en.lane;
+    exhibitMap[en.lane] = en;
   });
 
   return { weather, exhibit: exhibitMap, fetchedAt: new Date().toISOString() };
@@ -435,35 +474,27 @@ app.get('/api/odds3t', async (req, res) => {
   }
 });
 
+// 組番の正規化: "４-３-５"(全角) / "4=3=5" / "435"(spanが連結された場合) → "4-3-5"
+function normCombo(raw) {
+  const t = normDigits(raw).replace(/\s+/g, '');
+  if (/^[1-6]([-=][1-6]){1,2}$/.test(t)) return t.replace(/=/g, '-');
+  if (/^[1-6]{2,3}$/.test(t)) return t.split('').join('-');
+  if (/^[1-6]$/.test(t)) return t; // 単勝・複勝
+  return null;
+}
+
 function parseRaceResult(html) {
   const $ = cheerio.load(html);
   const order = [];
   const payouts = [];
   const PAYOUT_TYPES = ['3連単','3連複','2連単','2連複','拡連複','単勝','複勝'];
-  const COMBO_RE = /^[1-6]([-=][1-6]){0,2}$/;
   let curPayType = null; // rowspan継続行用（複勝・拡連複の2行目以降）
 
   $('tr').each((_, tr) => {
     const cells = $(tr).find('td');
     if (!cells.length) return;
 
-    // 着順行: "1着" or "1" が最初のセル
-    let isRankRow = false;
-    for (let ci = 0; ci < Math.min(cells.length, 3); ci++) {
-      const t = cells.eq(ci).text().trim();
-      const rankM = t.match(/^([1-6])着?$/);
-      if (!rankM) continue;
-      const rank = parseInt(rankM[1]);
-      // 次のセルから艇番を探す（1〜6の数字単独のセル）
-      for (let li = ci + 1; li < Math.min(cells.length, ci + 4); li++) {
-        const lv = parseInt(cells.eq(li).text().replace(/\s+/g, ''));
-        if (lv >= 1 && lv <= 6) { order.push({ rank, lane: lv }); isRankRow = true; break; }
-      }
-      break;
-    }
-    if (isRankRow) { curPayType = null; return; }
-
-    // 払戻行: 式別名が最初のセル。複勝・拡連複は同一行内または rowspan 継続行に複数の払戻がある
+    // 払戻行: 式別名が先頭2セル以内。複勝・拡連複は同一行内または rowspan 継続行に複数の払戻がある
     let type = null;
     let startIdx = 0;
     for (let ci = 0; ci < Math.min(cells.length, 2); ci++) {
@@ -474,27 +505,61 @@ function parseRaceResult(html) {
       curPayType = cells.eq(ci).attr('rowspan') ? t0 : null;
       break;
     }
-    // 式別セルがない行: 直前の rowspan 式別の継続行として扱う
-    if (!type && curPayType) { type = curPayType; startIdx = 0; }
-    if (!type) return;
-
-    const remaining = cells.toArray().slice(startIdx);
-    for (let i = 0; i < remaining.length - 1; i++) {
-      const combo  = $(remaining[i]).text().replace(/\s+/g, '');
-      if (!COMBO_RE.test(combo)) continue;
-      const payRaw = $(remaining[i + 1]).text().replace(/[,¥円\s]/g, '');
-      const pay    = parseInt(payRaw);
-      if (!isNaN(pay) && pay > 0) {
-        payouts.push({ type, combo, pay });
-        i++; // 払戻金セルはスキップして次のペアへ
+    if (type) {
+      const remaining = cells.toArray().slice(startIdx);
+      for (let i = 0; i < remaining.length - 1; i++) {
+        const combo = normCombo($(remaining[i]).text());
+        if (!combo) continue;
+        const payRaw = normDigits($(remaining[i + 1]).text()).replace(/[,¥円\s]/g, '');
+        const pay    = parseInt(payRaw);
+        if (!isNaN(pay) && pay > 0) {
+          payouts.push({ type, combo, pay });
+          i++; // 払戻金セルはスキップして次のペアへ
+        }
       }
+      return;
+    }
+    // 式別セルがない行: 直前の rowspan 式別の継続行として扱う
+    if (curPayType && cells.length >= 2) {
+      const combo = normCombo(cells.eq(0).text());
+      const payRaw = normDigits(cells.eq(1).text()).replace(/[,¥円\s]/g, '');
+      const pay = parseInt(payRaw);
+      if (combo && !isNaN(pay) && pay > 0) {
+        payouts.push({ type: curPayType, combo, pay });
+        return;
+      }
+    }
+
+    // 着順行: 先頭セルが着順（"１"全角 / "1" / "1着"）。人気列などの誤検出を防ぐため先頭セルのみ判定
+    if (cells.length < 3) return;
+    const t0 = normDigits(cells.eq(0).text().trim());
+    const rankM = t0.match(/^([1-6])着?$/);
+    if (!rankM) return;
+    const rank = parseInt(rankM[1]);
+    for (let li = 1; li < Math.min(cells.length, 4); li++) {
+      const lv = parseInt(normDigits(cells.eq(li).text().replace(/\s+/g, '')));
+      if (lv >= 1 && lv <= 6) { order.push({ rank, lane: lv }); curPayType = null; break; }
     }
   });
 
-  // 重複除去（着順）
-  const seen = new Set();
-  const uniqOrder = order.filter(o => { const k = o.rank; if (seen.has(k)) return false; seen.add(k); return true; });
-  return { order: uniqOrder.sort((a,b) => a.rank - b.rank), payouts, fetchedAt: new Date().toISOString() };
+  // 重複除去（同一rankの2件目以降と、同一laneの重複を除去）
+  const seenRank = new Set(), seenLane = new Set();
+  let uniqOrder = order.filter(o => {
+    if (seenRank.has(o.rank) || seenLane.has(o.lane)) return false;
+    seenRank.add(o.rank); seenLane.add(o.lane);
+    return true;
+  }).sort((a, b) => a.rank - b.rank);
+
+  // 3連単の組番は1〜3着そのもの — 着順テーブルのパースに失敗/不整合でも組番から確実に復元する
+  const tri = payouts.find(p => p.type === '3連単' && /^[1-6]-[1-6]-[1-6]$/.test(p.combo));
+  if (tri) {
+    const lanes = tri.combo.split('-').map(Number);
+    const top3 = lanes.map((lane, i) => ({ rank: i + 1, lane }));
+    const rest = uniqOrder.filter(o => o.rank >= 4 && !lanes.includes(o.lane));
+    uniqOrder = top3.concat(rest);
+  }
+
+  return { order: uniqOrder, payouts, fetchedAt: new Date().toISOString() };
 }
 
 app.get('/api/result', async (req, res) => {
@@ -693,6 +758,30 @@ app.get('/api/debug-before', async (req, res) => {
     });
     const parsed = parseBeforeinfo(html);
     res.json({ rows, parsed, htmlLen: html.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/debug-result', async (req, res) => {
+  const { jcd = '04', hd, rno = '1' } = req.query;
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = hd || today;
+  try {
+    const html = await fetchHtml(`${BASE}/raceresult?jcd=${jcd}&hd=${date}&rno=${rno}`);
+    if (!html) return res.json({ error: 'HTML取得失敗' });
+    const $ = cheerio.load(html);
+    const rows = [];
+    $('tr').each((_, tr) => {
+      const cells = $(tr).find('td');
+      if (!cells.length) return;
+      rows.push({
+        cellCount: cells.length,
+        rowspan: cells.first().attr('rowspan') || null,
+        cells: cells.map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 25)).get().slice(0, 6),
+      });
+    });
+    res.json({ rows: rows.slice(0, 40), parsed: parseRaceResult(html), htmlLen: html.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
