@@ -307,19 +307,51 @@ function parseBeforeinfo(html) {
 function parseOdds1t(html) {
   const $ = cheerio.load(html);
   const odds = {};
+  // 艇番で始まる行から最初の小数セル（単勝オッズ形式 "3.2"）を探す。
+  // 実ページ（oddstf）は 枠|選手名|単勝|複勝レンジ の構成で列位置が固定でないため形式で判定
   $('tbody tr').each((_, tr) => {
-    const cells = $(tr).find('td');
+    const cells = $(tr).find('td').toArray();
     if (cells.length < 2) return;
-    const lane = parseInt(cells.eq(0).text().trim());
-    const odd  = parseFloat(cells.eq(1).text().trim());
-    if (!isNaN(lane) && lane >= 1 && lane <= 6 && !isNaN(odd)) odds[lane] = odd;
+    const lane = parseInt(normDigits($(cells[0]).text().trim()));
+    if (!(lane >= 1 && lane <= 6) || odds[lane] != null) return;
+    for (let i = 1; i < cells.length; i++) {
+      const t = $(cells[i]).text().trim();
+      if (/^\d{1,3}\.\d$/.test(t)) { odds[lane] = parseFloat(t); break; }
+    }
   });
   return { odds, fetchedAt: new Date().toISOString() };
 }
 
+// 実ページの3連単オッズは6列グリッド:
+//   1着=1〜6号艇の列グループ × [2着(rowspan=4) | 3着 | オッズ]
+//   新2着グループ行=18セル、継続行=12セル
 function parseOdds3t(html) {
   const $ = cheerio.load(html);
   const odds = {};
+  const cur2 = [0, 0, 0, 0, 0, 0];
+  let gridSeen = false;
+  $('tbody tr').each((_, tr) => {
+    const cells = $(tr).find('td').toArray();
+    if (cells.length === 18) {
+      gridSeen = true;
+      for (let g = 0; g < 6; g++) {
+        const c2 = parseInt(normDigits($(cells[g*3]).text().trim()));
+        const c3 = parseInt(normDigits($(cells[g*3+1]).text().trim()));
+        const v  = parseFloat($(cells[g*3+2]).text().trim());
+        if (c2 >= 1 && c2 <= 6) cur2[g] = c2;
+        if (c3 >= 1 && c3 <= 6 && !isNaN(v) && v > 0 && cur2[g]) odds[`${g+1}-${cur2[g]}-${c3}`] = v;
+      }
+    } else if (cells.length === 12 && gridSeen) {
+      for (let g = 0; g < 6; g++) {
+        const c3 = parseInt(normDigits($(cells[g*2]).text().trim()));
+        const v  = parseFloat($(cells[g*2+1]).text().trim());
+        if (c3 >= 1 && c3 <= 6 && !isNaN(v) && v > 0 && cur2[g]) odds[`${g+1}-${cur2[g]}-${c3}`] = v;
+      }
+    }
+  });
+  if (Object.keys(odds).length) return { odds };
+
+  // フォールバック: 1行1組番の簡易形式（rowspanで1着継続）
   const boats = [1, 2, 3, 4, 5, 6];
   let curFirst = 0;
   $('tbody tr').each((_, tr) => {
@@ -342,9 +374,22 @@ function parseOdds3t(html) {
   return { odds };
 }
 
+// 実ページの2連単オッズ: 1着=1〜6号艇の列グループ × [2着 | オッズ] = 12セル/行
 function parseOdds2t(html) {
   const $ = cheerio.load(html);
   const odds = {};
+  $('tbody tr').each((_, tr) => {
+    const cells = $(tr).find('td').toArray();
+    if (cells.length !== 12) return;
+    for (let g = 0; g < 6; g++) {
+      const c2 = parseInt(normDigits($(cells[g*2]).text().trim()));
+      const v  = parseFloat($(cells[g*2+1]).text().trim());
+      if (c2 >= 1 && c2 <= 6 && c2 !== g+1 && !isNaN(v) && v > 0 && odds[`${g+1}-${c2}`] == null) odds[`${g+1}-${c2}`] = v;
+    }
+  });
+  if (Object.keys(odds).length) return { odds };
+
+  // フォールバック: 1行1組番の簡易形式
   let curFirst = 0;
   $('tbody tr').each((_, tr) => {
     const cells = $(tr).find('td').toArray();
@@ -363,9 +408,35 @@ function parseOdds2t(html) {
   return { odds };
 }
 
+// 実ページの3連複オッズ: 1艇目=1〜4号艇の列グループ × [2艇目(rowspan) | 3艇目 | オッズ]
+//   新グループ行=12セル、継続行=8セル。キーは昇順ソート
 function parseOdds3f(html) {
   const $ = cheerio.load(html);
   const odds = {};
+  const cur2 = [0, 0, 0, 0];
+  let gridSeen = false;
+  $('tbody tr').each((_, tr) => {
+    const cells = $(tr).find('td').toArray();
+    if (cells.length === 12) {
+      gridSeen = true;
+      for (let g = 0; g < 4; g++) {
+        const c2 = parseInt(normDigits($(cells[g*3]).text().trim()));
+        const c3 = parseInt(normDigits($(cells[g*3+1]).text().trim()));
+        const v  = parseFloat($(cells[g*3+2]).text().trim());
+        if (c2 >= 1 && c2 <= 6) cur2[g] = c2;
+        if (c3 >= 1 && c3 <= 6 && !isNaN(v) && v > 0 && cur2[g]) odds[[g+1, cur2[g], c3].sort((a,b)=>a-b).join('-')] = v;
+      }
+    } else if (cells.length === 8 && gridSeen) {
+      for (let g = 0; g < 4; g++) {
+        const c3 = parseInt(normDigits($(cells[g*2]).text().trim()));
+        const v  = parseFloat($(cells[g*2+1]).text().trim());
+        if (c3 >= 1 && c3 <= 6 && !isNaN(v) && v > 0 && cur2[g]) odds[[g+1, cur2[g], c3].sort((a,b)=>a-b).join('-')] = v;
+      }
+    }
+  });
+  if (Object.keys(odds).length) return { odds };
+
+  // フォールバック: 1行1組番の汎用スキャン
   $('tbody tr').each((_, tr) => {
     const cells = $(tr).find('td').toArray();
     if (cells.length < 2) return;
@@ -373,7 +444,6 @@ function parseOdds3f(html) {
     let oddsVal = null;
     cells.forEach(td => {
       const raw = $(td).text().trim();
-      // 小数点を含むセルはオッズ値。数字分解すると組番と誤認する（例: 45.6 → 4,5,6）
       if (raw.includes('.')) {
         const v = parseFloat(raw);
         if (!isNaN(v) && v >= 1.0) oddsVal = v;
@@ -387,6 +457,20 @@ function parseOdds3f(html) {
     if (boats.length === 3 && oddsVal) odds[boats.slice().sort((a,b)=>a-b).join('-')] = oddsVal;
   });
   return { odds };
+}
+
+// 複数の候補URLを順に試し、オッズが取れた最初の結果を返す
+// （単勝は oddstf、2連単は odds2tf が実際のパスのため旧パスと両対応）
+async function fetchParsedOdds(paths, parser) {
+  for (const p of paths) {
+    try {
+      const html = await fetchHtml(`${BASE}/${p}`);
+      if (!html) continue;
+      const r = parser(html);
+      if (Object.keys(r.odds).length) return r;
+    } catch {}
+  }
+  return { odds: {} };
 }
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
@@ -414,9 +498,8 @@ app.get('/api/odds', async (req, res) => {
   const err = validateParams(jcd, hd);
   if (err) return res.status(400).json({ error: err });
   try {
-    const html = await fetchHtml(`${BASE}/odds1t?jcd=${jcd}&hd=${hd}&rno=${rno}`);
-    if (!html) return res.json({ odds: {} });
-    res.json(parseOdds1t(html));
+    const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
+    res.json(await fetchParsedOdds([`oddstf?${q}`, `odds1t?${q}`], parseOdds1t));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -427,9 +510,8 @@ app.get('/api/odds2t', async (req, res) => {
   const err = validateParams(jcd, hd);
   if (err) return res.status(400).json({ error: err });
   try {
-    const html = await fetchHtml(`${BASE}/odds2t?jcd=${jcd}&hd=${hd}&rno=${rno}`);
-    if (!html) return res.json({ odds: {} });
-    res.json(parseOdds2t(html));
+    const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
+    res.json(await fetchParsedOdds([`odds2tf?${q}`, `odds2t?${q}`], parseOdds2t));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -634,14 +716,15 @@ app.get('/api/all', async (req, res) => {
   if (hit && Date.now() < hit.exp) return res.json(hit.data);
 
   try {
+    const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
     const [rlRes, oddsRes, beforeRes] = await Promise.allSettled([
-      fetchHtml(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=${rno}`),
-      fetchHtml(`${BASE}/odds1t?jcd=${jcd}&hd=${hd}&rno=${rno}`),
-      fetchHtml(`${BASE}/beforeinfo?jcd=${jcd}&hd=${hd}&rno=${rno}`),
+      fetchHtml(`${BASE}/racelist?${q}`),
+      fetchParsedOdds([`oddstf?${q}`, `odds1t?${q}`], parseOdds1t),
+      fetchHtml(`${BASE}/beforeinfo?${q}`),
     ]);
     const rl = rlRes.status === 'fulfilled' && rlRes.value ? parseRacelist(rlRes.value, jcd, hd, rno) : null;
     if (!rl || rl.racers.length === 0) return res.status(404).json({ error: '出走データがありません。開催日・場コードを確認してください。平和島=04 / 芦屋=21' });
-    const odds   = oddsRes.status === 'fulfilled' && oddsRes.value ? parseOdds1t(oddsRes.value) : { odds: {} };
+    const odds   = oddsRes.status === 'fulfilled' ? oddsRes.value : { odds: {} };
     const before = beforeRes.status === 'fulfilled' && beforeRes.value ? parseBeforeinfo(beforeRes.value) : { weather: {}, exhibit: {} };
     rl.racers = rl.racers.map(r => ({ ...r,
       odds: odds.odds[r.lane] || null,

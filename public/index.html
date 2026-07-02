@@ -186,6 +186,15 @@ input,select{font-family:var(--sans);}
 .pred-section-sub{font-size:9px;color:var(--muted);}
 .pred-scroll{display:flex;gap:8px;padding:0 14px 10px;overflow-x:auto;scrollbar-width:none;}
 .pred-scroll::-webkit-scrollbar{display:none;}
+.pred-list{display:flex;flex-direction:column;gap:6px;padding:0 14px 10px;}
+.pred-row{display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;}
+.pred-row.matoi{border-color:rgba(0,200,140,0.3);}
+.pred-row.ana{border-color:rgba(245,193,24,0.25);}
+.pr-idx{font-family:var(--mono);font-size:11px;color:var(--muted);width:16px;flex-shrink:0;text-align:center;}
+.pr-dots{display:flex;align-items:center;gap:3px;flex-shrink:0;}
+.pr-val{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:0.04em;min-width:56px;}
+.pr-note{font-size:9px;color:var(--muted);flex-shrink:0;}
+.pr-odds{margin-left:auto;text-align:right;font-family:var(--mono);font-size:10px;display:flex;flex-direction:column;gap:1px;align-items:flex-end;flex-shrink:0;}
 .pred-chip{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:100px;}
 .pred-chip.matoi{border-color:rgba(0,200,140,0.35);}
 .pred-chip.matoi .pc-val{color:var(--accent2);}
@@ -433,13 +442,13 @@ input,select{font-family:var(--sans);}
         <div class="pred-section-sub">8点フォーメーション</div>
         <span id="matoiConfBadge"></span>
       </div>
-      <div class="pred-scroll" id="predScrollMatoi"></div>
+      <div class="pred-list" id="predScrollMatoi"></div>
       <div class="pred-section" style="margin-top:4px">
         <div class="pred-section-lbl ana">★ 高配当穴</div>
         <div class="pred-section-sub">8点フォーメーション</div>
         <span id="anaConfBadge"></span>
       </div>
-      <div class="pred-scroll" id="predScrollAna"></div>
+      <div class="pred-list" id="predScrollAna"></div>
       <div class="eff-cards" id="effCards"></div>
       <div class="ref-odds-box" id="refOdds2t" style="display:none">
         <div class="ref-odds-title">2連単オッズ（予想組合せ）</div>
@@ -509,7 +518,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v2.8';
+const APP_VERSION = 'v2.9';
 document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
@@ -1658,27 +1667,27 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
     const anaList   = (r.ana   || []).slice(0, 8);
     const oddsMap   = Object.fromEntries((raceData?.racers||[]).map(x => [x.lane, x.odds]));
 
-    function chipOdds(combo) {
-      const first = parseInt((combo||'').split('-')[0]);
-      const o = oddsMap[first];
-      return o != null ? `<div class="pc-odds" style="color:${o<3?'var(--gold)':o<10?'var(--accent2)':o<30?'var(--orange)':'var(--red)'}">${first}号 ${o.toFixed(1)}倍</div>` : '';
-    }
-
-    function chip3t(v) {
-      const o = odds3t[v];
-      return o != null ? `<div class="odds3t-val">3連単 ${o.toFixed(1)}倍</div>` : '';
-    }
-
+    // 縦リスト1行分: ① [色ドット] 4-3-5 ◎本命 | 3連単45.6倍 / 単勝3.2倍
     const CIRCLED = ['①','②','③','④','⑤','⑥','⑦','⑧'];
+    const comboDots = v => `<span class="pr-dots">${(v||'').split('-').map(n =>
+      `<span class="d-dot" style="background:${lBg[+n-1]||'#555'};color:${lFg[+n-1]||'#fff'}">${n}</span>`
+    ).join('')}</span>`;
+    const rowOdds = v => {
+      const o3 = odds3t[v];
+      const first = parseInt((v||'').split('-')[0]);
+      const o1 = oddsMap[first];
+      const c3 = o3 == null ? '' : `<span style="color:${o3<10?'var(--gold)':o3<50?'var(--accent2)':o3<150?'var(--orange)':'var(--red)'};font-weight:700">3連単 ${o3.toFixed(1)}倍</span>`;
+      const c1 = o1 == null ? '' : `<span style="color:var(--muted)">${first}号単勝 ${o1.toFixed(1)}倍</span>`;
+      return `<div class="pr-odds">${c3}${c1}</div>`;
+    };
+    const predRow = (cls, v, i, note) =>
+      `<div class="pred-row ${cls}"><span class="pr-idx">${CIRCLED[i]||i+1}</span>${comboDots(v)}<span class="pr-val">${v}</span><span class="pr-note">${note}</span>${rowOdds(v)}</div>`;
+
     document.getElementById('predScrollMatoi').innerHTML =
-      matoiList.map((v, i) =>
-        `<div class="pred-chip matoi"><div class="pc-type">本線 ${CIRCLED[i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'◎本命':i===1?'対抗':'押さえ'}</div>${chipOdds(v)}${chip3t(v)}</div>`
-      ).join('');
+      matoiList.map((v, i) => predRow('matoi', v, i, i===0?'◎本命':i===1?'対抗':'押さえ')).join('');
 
     document.getElementById('predScrollAna').innerHTML =
-      anaList.map((v, i) =>
-        `<div class="pred-chip ana"><div class="pc-type">穴 ${CIRCLED[i]||i+1}</div><div class="pc-val">${v}</div><div class="pc-note">${i===0?'★本線穴':i===1?'穴対抗':'穴押さえ'}</div>${chipOdds(v)}${chip3t(v)}</div>`
-      ).join('');
+      anaList.map((v, i) => predRow('ana', v, i, i===0?'★本線穴':i===1?'穴対抗':'穴押さえ')).join('');
 
     document.getElementById('effCards').innerHTML = `
       <div class="eff-card"><div class="eff-icon">💨</div><div class="eff-lbl">風況影響</div><div class="eff-text">${r.wind_effect}</div></div>
