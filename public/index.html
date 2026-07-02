@@ -482,8 +482,13 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v2.3';
+const APP_VERSION = 'v2.4';
 document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
+
+// 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
 
 /* ======================== STATE ======================== */
 let VENUE_JCD  = localStorage.getItem('br_venue') || '04';
@@ -633,9 +638,9 @@ function renderMotorList() {
     return `<div class="ml-row" id="mlr-${e.motorNo}">
       <div class="ml-mno">No.${e.motorNo}</div>
       <div class="ml-info">
-        <div class="ml-name">${e.racerName || '—'}</div>
+        <div class="ml-name">${escapeHtml(e.racerName) || '—'}</div>
         <div class="ml-meta">${[m2r, updAt].filter(Boolean).join(' · ')}</div>
-        ${e.note ? `<div class="ml-note">📝 ${e.note}</div>` : ''}
+        ${e.note ? `<div class="ml-note">📝 ${escapeHtml(e.note)}</div>` : ''}
       </div>
       <div style="text-align:center;margin-right:4px">
         ${e.grade ? `<span style="font-size:16px;font-weight:700;font-family:var(--mono);color:${gc}">${e.grade}</span>` : '<span style="font-size:11px;color:var(--muted)">未評価</span>'}
@@ -1344,7 +1349,7 @@ function buildEntryList(racers) {
           <div class="ex-grp"><span class="ex-lbl">展示タイム</span><input class="ex-input" id="et${r.lane}" type="number" step="0.01" placeholder="6.87" value="${ex.exhibitTime||''}" oninput="saveEx(${r.lane})" style="width:70px"></div>
           <div class="ex-grp"><span class="ex-lbl">ST</span><input class="ex-input" id="st${r.lane}" type="number" step="0.01" placeholder="0.12" value="${ex.st||''}" oninput="saveEx(${r.lane})" style="width:60px"></div>
         </div>
-        <input class="note-inp" id="note${r.lane}" placeholder="モーター気配・ターン評価など..." value="${md.note||''}" oninput="saveNote(${r.lane})">
+        <input class="note-inp" id="note${r.lane}" placeholder="モーター気配・ターン評価など..." value="${escapeHtml(md.note||'')}" oninput="saveNote(${r.lane})">
       </div>
     </div>`;
   }).join('') + '<div style="height:8px"></div>';

@@ -13,15 +13,22 @@ const raceCache    = new Map();
 const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
+const REDIS_ENABLED = !!(UPSTASH_URL && UPSTASH_TOKEN);
+
+// Redis障害でAPI全体を落とさないため、失敗時は null を返す
 async function redisCmd(...args) {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
-  const r = await fetch(UPSTASH_URL, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(args),
-  });
-  const d = await r.json();
-  return d.result ?? null;
+  if (!REDIS_ENABLED) return null;
+  try {
+    const r = await fetch(UPSTASH_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+    const d = await r.json();
+    return d.result ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
@@ -30,7 +37,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 // パスワード保護（全ページに適用）
 app.use(basicAuth({
-  users: { 'guest': SITE_PASSWORD },
+  authorizer: (user, pass) =>
+    basicAuth.safeCompare(user, 'guest') & basicAuth.safeCompare(pass, SITE_PASSWORD),
   challenge: true,
   realm: 'BoatRace Dashboard',
 }));
@@ -49,10 +57,12 @@ const BASE = 'https://www.boatrace.jp/owpc/pc/race';
 const UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36';
 
 async function fetchHtml(url, retries = 3) {
+  // Vercelの実行時間制限（30秒）内に必ず収まるよう、リトライ込みの合計時間に上限を設ける
+  const deadline = Date.now() + 20000;
   for (let i = 0; i <= retries; i++) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15000);
+      const timer = setTimeout(() => controller.abort(), Math.max(1000, Math.min(15000, deadline - Date.now())));
       const res = await fetch(url, {
         headers: {
           'User-Agent': UA,
@@ -63,10 +73,11 @@ async function fetchHtml(url, retries = 3) {
       });
       clearTimeout(timer);
       if (res.status === 404) return null;
+      if (res.status === 403) throw Object.assign(new Error('HTTP 403 (アクセス拒否)'), { noRetry: true });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.text();
     } catch (e) {
-      if (i === retries) throw e;
+      if (e.noRetry || i === retries || Date.now() >= deadline) throw e;
       await new Promise(r => setTimeout(r, 500 * (i + 1)));
     }
   }
@@ -200,18 +211,18 @@ function parseBeforeinfo(html) {
     const label = $(el).text().trim();
     const val   = $(el).next('td').text().trim();
     if (label === '天候' && val) weather.sky = val;
-    if (label === '風速' && val) weather.wind = parseFloat(val) || 0;
+    if (label === '風速' && val) { const n = parseFloat(val); if (!isNaN(n)) weather.wind = n; }
     if (label === '風向' && val) weather.windDir = val;
-    if (label === '水温' && val) weather.water = parseFloat(val) || 0;
-    if (label === '波高' && val) weather.wave  = parseFloat(val) || 0;
+    if (label === '水温' && val) { const n = parseFloat(val); if (!isNaN(n)) weather.water = n; }
+    if (label === '波高' && val) { const n = parseFloat(val); if (!isNaN(n)) weather.wave = n; }
   });
-  // フォールバック: コロン区切りテキスト形式
+  // フォールバック: コロン区切りテキスト形式（0m/s・0cm は有効値なので == null で判定）
   const bodyText = $.text();
-  if (!weather.sky)     weather.sky     = (bodyText.match(/天候\s*[:：]?\s*([晴曇雨雪][^\s\d]*)/) || [])[1] || '';
-  if (!weather.wind)    weather.wind    = parseFloat((bodyText.match(/風速\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
-  if (!weather.windDir) weather.windDir = (bodyText.match(/風向\s*[:：]?\s*([北南東西][^\s\d]{0,4})/) || [])[1] || '';
-  if (!weather.water)   weather.water   = parseFloat((bodyText.match(/水温\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
-  if (!weather.wave)    weather.wave    = parseFloat((bodyText.match(/波高\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
+  if (!weather.sky)          weather.sky     = (bodyText.match(/天候\s*[:：]?\s*([晴曇雨雪][^\s\d]*)/) || [])[1] || '';
+  if (weather.wind == null)  weather.wind    = parseFloat((bodyText.match(/風速\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
+  if (!weather.windDir)      weather.windDir = (bodyText.match(/風向\s*[:：]?\s*([北南東西][^\s\d]{0,4})/) || [])[1] || '';
+  if (weather.water == null) weather.water   = parseFloat((bodyText.match(/水温\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
+  if (weather.wave == null)  weather.wave    = parseFloat((bodyText.match(/波高\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
 
   const exhibitMap = {};
   $('tr').each((_, tr) => {
@@ -316,12 +327,16 @@ function parseOdds3f(html) {
     let oddsVal = null;
     cells.forEach(td => {
       const raw = $(td).text().trim();
+      // 小数点を含むセルはオッズ値。数字分解すると組番と誤認する（例: 45.6 → 4,5,6）
+      if (raw.includes('.')) {
+        const v = parseFloat(raw);
+        if (!isNaN(v) && v >= 1.0) oddsVal = v;
+        return;
+      }
       const nums = raw.replace(/[=×\s]/g, '').split('').map(Number).filter(n => n >= 1 && n <= 6);
-      if (nums.length >= 3) { nums.slice(0,3).forEach(n => boats.push(n)); return; }
+      if (nums.length >= 3 && boats.length === 0) { nums.slice(0,3).forEach(n => boats.push(n)); return; }
       const n = parseInt(raw);
-      const v = parseFloat(raw);
       if (!isNaN(n) && n >= 1 && n <= 6 && boats.length < 3) boats.push(n);
-      else if (!isNaN(v) && v >= 1.0 && raw.includes('.')) oddsVal = v;
     });
     if (boats.length === 3 && oddsVal) odds[boats.slice().sort((a,b)=>a-b).join('-')] = oddsVal;
   });
@@ -418,12 +433,15 @@ function parseRaceResult(html) {
   const order = [];
   const payouts = [];
   const PAYOUT_TYPES = ['3連単','3連複','2連単','2連複','拡連複','単勝','複勝'];
+  const COMBO_RE = /^[1-6]([-=][1-6]){0,2}$/;
+  let curPayType = null; // rowspan継続行用（複勝・拡連複の2行目以降）
 
   $('tr').each((_, tr) => {
     const cells = $(tr).find('td');
     if (!cells.length) return;
 
     // 着順行: "1着" or "1" が最初のセル
+    let isRankRow = false;
     for (let ci = 0; ci < Math.min(cells.length, 3); ci++) {
       const t = cells.eq(ci).text().trim();
       const rankM = t.match(/^([1-6])着?$/);
@@ -432,27 +450,37 @@ function parseRaceResult(html) {
       // 次のセルから艇番を探す（1〜6の数字単独のセル）
       for (let li = ci + 1; li < Math.min(cells.length, ci + 4); li++) {
         const lv = parseInt(cells.eq(li).text().replace(/\s+/g, ''));
-        if (lv >= 1 && lv <= 6) { order.push({ rank, lane: lv }); break; }
+        if (lv >= 1 && lv <= 6) { order.push({ rank, lane: lv }); isRankRow = true; break; }
       }
       break;
     }
+    if (isRankRow) { curPayType = null; return; }
 
-    // 払戻行: 式別名が最初（またはrowspanで継続）のセル
+    // 払戻行: 式別名が最初のセル。複勝・拡連複は同一行内または rowspan 継続行に複数の払戻がある
+    let type = null;
+    let startIdx = 0;
     for (let ci = 0; ci < Math.min(cells.length, 2); ci++) {
       const t0 = cells.eq(ci).text().trim();
       if (!PAYOUT_TYPES.includes(t0)) continue;
-      // combo と pay を次のセルから探す
-      const remaining = cells.toArray().slice(ci + 1);
-      for (let i = 0; i < remaining.length - 1; i++) {
-        const combo  = $(remaining[i]).text().replace(/\s+/g, '');
-        const payRaw = $(remaining[i + 1]).text().replace(/[,¥円\s]/g, '');
-        const pay    = parseInt(payRaw);
-        if (combo && !isNaN(pay) && pay > 0) {
-          payouts.push({ type: t0, combo, pay });
-          break;
-        }
-      }
+      type = t0;
+      startIdx = ci + 1;
+      curPayType = cells.eq(ci).attr('rowspan') ? t0 : null;
       break;
+    }
+    // 式別セルがない行: 直前の rowspan 式別の継続行として扱う
+    if (!type && curPayType) { type = curPayType; startIdx = 0; }
+    if (!type) return;
+
+    const remaining = cells.toArray().slice(startIdx);
+    for (let i = 0; i < remaining.length - 1; i++) {
+      const combo  = $(remaining[i]).text().replace(/\s+/g, '');
+      if (!COMBO_RE.test(combo)) continue;
+      const payRaw = $(remaining[i + 1]).text().replace(/[,¥円\s]/g, '');
+      const pay    = parseInt(payRaw);
+      if (!isNaN(pay) && pay > 0) {
+        payouts.push({ type, combo, pay });
+        i++; // 払戻金セルはスキップして次のペアへ
+      }
     }
   });
 
@@ -502,10 +530,12 @@ app.get('/api/motors', async (req, res) => {
 app.post('/api/motors', async (req, res) => {
   const { jcd, motorNo, grade, note, racerName, motor2Rate } = req.body;
   if (!jcd || !motorNo) return res.status(400).json({ error: 'jcd and motorNo required' });
+  if (grade && !['S','A','B','C','D'].includes(grade)) return res.status(400).json({ error: '無効なグレード' });
   try {
-    const val = JSON.stringify({ grade: grade || '', note: note || '', racerName: racerName || '', motor2Rate: motor2Rate || null, updatedAt: new Date().toISOString() });
+    const val = JSON.stringify({ grade: grade || '', note: String(note || '').slice(0, 200), racerName: String(racerName || '').slice(0, 50), motor2Rate: motor2Rate || null, updatedAt: new Date().toISOString() });
     await redisCmd('HSET', `motors:${jcd}`, String(motorNo), val);
-    res.json({ ok: true });
+    // shared=false は Redis 未設定（ローカル環境など）で共有保存されなかったことを示す
+    res.json({ ok: true, shared: REDIS_ENABLED });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -628,7 +658,7 @@ app.get('/api/debug', async (req, res) => {
 app.get('/api/list-models', async (req, res) => {
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY未設定' });
   try {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models', { headers: { 'x-goog-api-key': GEMINI_API_KEY } });
     const d = await r.json();
     const names = (d.models || []).map(m => m.name);
     res.json({ models: names, raw_error: d.error });
@@ -667,20 +697,30 @@ app.post('/api/predict', async (req, res) => {
     return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
   }
   const { prompt, cacheKey } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'promptが必要です' });
+  if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
+  if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
 
   if (cacheKey) {
     const hit = predictCache.get(cacheKey);
     if (hit && Date.now() < hit.exp) return res.json({ ...hit.data, cached: true });
+    // 共有キャッシュ（Redis）: 全ユーザー・全インスタンスで同じ予想を返す
+    const shared = await redisCmd('GET', `predict:${cacheKey}`);
+    if (shared) {
+      try {
+        const data = JSON.parse(shared);
+        predictCache.set(cacheKey, { data, exp: Date.now() + 600000 });
+        return res.json({ ...data, cached: true });
+      } catch {}
+    }
   }
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25000);
     const response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
@@ -708,6 +748,7 @@ app.post('/api/predict', async (req, res) => {
     if (cacheKey) {
       for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
       predictCache.set(cacheKey, { data: result, exp: Date.now() + 600000 });
+      redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '600');
     }
     res.json(result);
   } catch (e) {
