@@ -44,7 +44,14 @@ app.use(basicAuth({
 }));
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+// index.html と sw.js はブラウザにキャッシュさせない（バージョン更新を確実に届けるため）
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    }
+  },
+}));
 
 const VENUES = {
   '01':'桐生','02':'戸田','03':'江戸川','04':'平和島','05':'多摩川',
@@ -819,6 +826,7 @@ app.delete('/api/slot/record', async (req, res) => {
 
 // ルートアクセスでダッシュボードを返す
 app.get('/', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
