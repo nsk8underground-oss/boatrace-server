@@ -9,6 +9,7 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>ボートレース 予想</title>
+<script defer src="/_vercel/insights/script.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(reg => reg.update()).catch(() => {});
@@ -518,7 +519,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.0';
+const APP_VERSION = 'v3.1';
 document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す

@@ -17,6 +17,7 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
   if (url.pathname.startsWith('/api/')) return;
+  if (url.pathname.startsWith('/_vercel/')) return; // アクセス解析はキャッシュを通さない
 
   // ページ本体(HTML)はネットワーク優先 — 新バージョンが即座に届く。オフライン時のみキャッシュを使う
   if (e.request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html')) {
