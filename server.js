@@ -821,7 +821,7 @@ app.post('/api/predict', async (req, res) => {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 1200,
+          maxOutputTokens: 2200, // 8点×2フォーメーション+展開シナリオ2本分
           responseMimeType: 'application/json',
           thinkingConfig: { thinkingBudget: 0 },
         },
