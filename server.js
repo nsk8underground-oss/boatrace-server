@@ -920,27 +920,48 @@ app.get('/api/ai-health', async (req, res) => {
   });
 });
 
+// 共有予想の検索（メモリ→Redis）。見つからなければ null
+async function lookupSharedPredict(cacheKey) {
+  const hit = predictCache.get(cacheKey);
+  if (hit && Date.now() < hit.exp) return hit.data;
+  const shared = await redisCmd('GET', `predict:${cacheKey}`);
+  if (shared) {
+    try {
+      const data = JSON.parse(shared);
+      predictCache.set(cacheKey, { data, exp: Date.now() + 3600000 });
+      return data;
+    } catch {}
+  }
+  return null;
+}
+
+// 共有予想の読み取り専用API: 他ユーザーが生成済みの予想があれば返す（Gemini APIは消費しない）
+app.get('/api/predict-shared', async (req, res) => {
+  const key = req.query.key;
+  if (!key || typeof key !== 'string' || key.length > 200) return res.status(400).json({ error: 'key required' });
+  try {
+    const data = await lookupSharedPredict(key);
+    if (data) return res.json({ found: true, ...data, cached: true });
+    res.json({ found: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // AI予想エンドポイント（Gemini）
 app.post('/api/predict', async (req, res) => {
-  if (!GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
-  }
   const { prompt, cacheKey } = req.body;
   if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
   if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
 
+  // 共有キャッシュにあればGemini不要（APIキー未設定でも返せる）
   if (cacheKey) {
-    const hit = predictCache.get(cacheKey);
-    if (hit && Date.now() < hit.exp) return res.json({ ...hit.data, cached: true });
-    // 共有キャッシュ（Redis）: 全ユーザー・全インスタンスで同じ予想を返す
-    const shared = await redisCmd('GET', `predict:${cacheKey}`);
-    if (shared) {
-      try {
-        const data = JSON.parse(shared);
-        predictCache.set(cacheKey, { data, exp: Date.now() + 600000 });
-        return res.json({ ...data, cached: true });
-      } catch {}
-    }
+    const hit = await lookupSharedPredict(cacheKey);
+    if (hit) return res.json({ ...hit, cached: true });
+  }
+
+  if (!GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
   }
 
   try {
@@ -1024,11 +1045,12 @@ app.post('/api/predict', async (req, res) => {
           });
         }
       }
-      const result = { content: [{ text: jsonText }], model };
+      const result = { content: [{ text: jsonText }], model, at: new Date().toISOString() };
       if (cacheKey) {
         for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
-        predictCache.set(cacheKey, { data: result, exp: Date.now() + 600000 });
-        redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '600');
+        // 60分共有: 誰かが生成した予想をレース締切まで全ユーザーで使い回してAPI消費を抑える
+        predictCache.set(cacheKey, { data: result, exp: Date.now() + 3600000 });
+        redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '3600');
       }
       return res.json(result);
     }

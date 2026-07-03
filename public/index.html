@@ -519,7 +519,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.4';
+const APP_VERSION = 'v3.5';
 document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
@@ -1090,6 +1090,7 @@ async function fetchAllData() {
     buildOddsPanel();
     showToast('✅ データ取得完了');
     syncMotors();
+    runPredict(true).catch(() => {}); // 共有予想があれば自動表示
     setTimeout(() => refreshBefore(true).catch(() => {}), 3000);
   } catch (e) {
     showError('取得エラー: ' + e.message + '（時間をおいて再試行してください）');
@@ -1123,6 +1124,7 @@ async function fetchRace(rno) {
     buildMiniRacers(data.racers);
     buildOddsPanel();
     syncMotors();
+    runPredict(true).catch(() => {}); // 共有予想があれば自動表示
     setTimeout(() => refreshBefore(true).catch(() => {}), 3000);
   } catch (e) {
     showError('取得エラー: ' + e.message);
@@ -1159,6 +1161,7 @@ async function refreshBefore(auto = false) {
     buildOddsPanel();
     if (!auto) showToast(updated > 0 ? `✅ 展示タイム ${updated}艇更新` : '展示データはまだ公開されていません（展示航走後に反映されます）');
     else if (updated > 0) showToast(`✅ 展示タイム ${updated}艇自動更新`);
+    if (updated > 0) runPredict(true).catch(() => {}); // 展示反映後の共有予想があれば自動アップグレード
   } catch (e) {
     if (!auto) showToast('⚠ 展示取得失敗: ' + e.message);
   } finally {
@@ -1548,26 +1551,42 @@ async function fetchPredictWithRetry(payload, onWait) {
   }
 }
 
-async function runPredict() {
+let lastPredKey = null; // 表示済みの予想キー（自動表示の重複防止）
+
+// auto=true: 共有予想が存在するときだけ表示する（Gemini APIは消費しない）
+async function runPredict(auto = false) {
   if (!raceData || !raceData.racers || raceData.racers.length === 0) {
-    alert('先にレースデータを取得してください（↻ 取得ボタン）');
+    if (!auto) alert('先にレースデータを取得してください（↻ 取得ボタン）');
     return;
   }
   const btn       = document.getElementById('predictBtn');
   const aiBox     = document.getElementById('aiBox');
   const aiText    = document.getElementById('aiText');
   const predCards = document.getElementById('predCards');
+
+  const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
+  // ex0/ex1: 展示タイム反映前後で別キー — 展示反映後は新しい予想に自動アップグレードされる
+  const hasEx = raceData.racers.some(r => r.exhibitTime != null);
+  const cacheKey = `v4_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
+
+  let sharedData = null;
+  if (auto) {
+    if (btn.disabled || lastPredKey === cacheKey) return; // 生成中 or 表示済み
+    try {
+      const sres = await fetch(`${SERVER_URL}/api/predict-shared?key=${encodeURIComponent(cacheKey)}`, { signal: AbortSignal.timeout(8000) });
+      sharedData = await sres.json();
+    } catch { return; }
+    if (!sharedData?.found) return; // 共有予想なし → 何もしない
+  }
+
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> 解析中...';
   aiBox.style.display     = 'block';
   predCards.style.display = 'none';
   document.getElementById('tenkaiBox').style.display = 'none';
   document.getElementById('resultBox').style.display = 'none';
-  aiText.textContent = 'Gemini AI がレースデータを解析中...';
+  aiText.textContent = auto ? '🌐 共有予想を読み込み中...' : 'Gemini AI がレースデータを解析中...';
   aiText.className = 'ai-text loading';
-
-  const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
-  const cacheKey = `v3_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}`; // v3: 8点+信頼度スキーマ
   const racers = raceData?.racers || [];
   const wind   = document.getElementById('windDir').value;
   const tide   = document.getElementById('tideType').value;
@@ -1628,7 +1647,7 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
   try {
     const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
     const [predictResp, odds3tResp, odds2tResp, odds3fResp] = await Promise.allSettled([
-      fetchPredictWithRetry({ prompt, cacheKey }, s => {
+      auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry({ prompt, cacheKey }, s => {
         aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
       }),
       fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
@@ -1641,7 +1660,16 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
       // サーバーが原因別の日本語メッセージを返す（1日枠切れ/混雑/キー無効など）
       throw new Error(data.error || 'APIエラー');
     }
-    document.getElementById('cacheTag').style.display = data.cached ? 'inline' : 'none';
+    // キャッシュ/共有バッジ: 生成時刻付きで表示
+    const tag = document.getElementById('cacheTag');
+    if (data.cached && data.at) {
+      const t = new Date(data.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+      tag.textContent = `🌐 共有予想（${t}生成）`;
+      tag.style.display = 'inline';
+    } else {
+      tag.textContent = 'キャッシュ済み';
+      tag.style.display = data.cached ? 'inline' : 'none';
+    }
     let odds3t = {}, odds2t = {}, odds3f = {};
     if (odds3tResp.status === 'fulfilled') { try { odds3t = (await odds3tResp.value.json()).odds || {}; } catch {} }
     if (odds2tResp.status === 'fulfilled') { try { odds2t = (await odds2tResp.value.json()).odds || {}; } catch {} }
@@ -1747,9 +1775,12 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
     show3f(document.getElementById('refOdds3f'), document.getElementById('refOdds3fRow'));
 
     predCards.style.display = 'block';
+    lastPredKey = cacheKey;
 
-    // 履歴に保存
-    saveToHistory({ id: Date.now(), jcd: VENUE_JCD, venue: VENUE_NAME, hd: dateStr, rno: currentRace, savedAt: new Date().toISOString(), matoi: matoiList, ana: anaList, hit: null, payout: 0 });
+    // 履歴に保存（自動表示のときは同一レースの重複保存を避ける）
+    if (!auto || !getHistory().find(h => h.jcd === VENUE_JCD && h.hd === dateStr && h.rno === currentRace)) {
+      saveToHistory({ id: Date.now(), jcd: VENUE_JCD, venue: VENUE_NAME, hd: dateStr, rno: currentRace, savedAt: new Date().toISOString(), matoi: matoiList, ana: anaList, hit: null, payout: 0 });
+    }
   } catch (e) {
     aiText.className = 'ai-text';
     aiText.textContent = `予想生成エラー: ${e.message}`;
@@ -1897,7 +1928,7 @@ function showPage(name, btn) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
   btn.classList.add('active');
-  if (name === 'predict') buildOddsPanel();
+  if (name === 'predict') { buildOddsPanel(); if (raceData) runPredict(true).catch(() => {}); }
   if (name === 'history') buildHistory();
 }
 
