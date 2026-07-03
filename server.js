@@ -650,10 +650,27 @@ app.get('/api/result', async (req, res) => {
   const { jcd, hd, rno = '1' } = req.query;
   const err = validateParams(jcd, hd);
   if (err) return res.status(400).json({ error: err });
+  const ck = `result:${jcd}_${hd}_${rno}`;
   try {
+    // 確定済みレース結果は変わらないためキャッシュ（メモリ→Redis 7日）
+    const mem = raceCache.get(ck);
+    if (mem && Date.now() < mem.exp) return res.json(mem.data);
+    const shared = await redisCmd('GET', ck);
+    if (shared) {
+      try {
+        const data = JSON.parse(shared);
+        raceCache.set(ck, { data, exp: Date.now() + 3600000 });
+        return res.json(data);
+      } catch {}
+    }
     const html = await fetchHtml(`${BASE}/raceresult?jcd=${jcd}&hd=${hd}&rno=${rno}`);
     if (!html) return res.json({ order: [], payouts: [] });
-    res.json(parseRaceResult(html));
+    const parsed = parseRaceResult(html);
+    if (parsed.order.length >= 3 && parsed.payouts.length) {
+      raceCache.set(ck, { data: parsed, exp: Date.now() + 3600000 });
+      redisCmd('SET', ck, JSON.stringify(parsed), 'EX', '604800');
+    }
+    res.json(parsed);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
