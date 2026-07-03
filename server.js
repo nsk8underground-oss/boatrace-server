@@ -34,8 +34,8 @@ async function redisCmd(...args) {
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'boatrace2026';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-// AI予想モデル: 先頭から順に試し、無料枠上限なら次へ（モデルごとに枠が独立）
-const PREDICT_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'];
+// AI予想モデル: 先頭から順に試し、無料枠上限・一時過負荷なら次へ（モデルごとに枠が独立）
+const PREDICT_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'];
 
 // パスワード保護（全ページに適用）
 app.use(basicAuth({
@@ -902,6 +902,7 @@ app.get('/api/ai-health', async (req, res) => {
           const sec = m ? Math.ceil(parseFloat(m[1])) : 0;
           cause = (sec > 300 || /per day|PerDay/i.test(msg)) ? '1日の無料枠を使い切り' : '1分あたりの無料枠上限';
         }
+        else if (/high demand|overloaded|try again later/i.test(msg)) cause = 'モデルが一時的に混雑（時間をおけば解消）';
         models.push({ model, ok: false, cause, geminiError: msg.slice(0, 200) });
       } else {
         models.push({ model, ok: true });
@@ -919,33 +920,59 @@ app.get('/api/ai-health', async (req, res) => {
   });
 });
 
+// 共有予想の検索（メモリ→Redis）。見つからなければ null
+async function lookupSharedPredict(cacheKey) {
+  const hit = predictCache.get(cacheKey);
+  if (hit && Date.now() < hit.exp) return hit.data;
+  const shared = await redisCmd('GET', `predict:${cacheKey}`);
+  if (shared) {
+    try {
+      const data = JSON.parse(shared);
+      predictCache.set(cacheKey, { data, exp: Date.now() + 3600000 });
+      return data;
+    } catch {}
+  }
+  return null;
+}
+
+// 共有予想の読み取り専用API: 他ユーザーが生成済みの予想があれば返す（Gemini APIは消費しない）
+app.get('/api/predict-shared', async (req, res) => {
+  const key = req.query.key;
+  if (!key || typeof key !== 'string' || key.length > 200) return res.status(400).json({ error: 'key required' });
+  try {
+    const data = await lookupSharedPredict(key);
+    if (data) return res.json({ found: true, ...data, cached: true });
+    res.json({ found: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // AI予想エンドポイント（Gemini）
 app.post('/api/predict', async (req, res) => {
-  if (!GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
-  }
   const { prompt, cacheKey } = req.body;
   if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
   if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
 
+  // 共有キャッシュにあればGemini不要（APIキー未設定でも返せる）
   if (cacheKey) {
-    const hit = predictCache.get(cacheKey);
-    if (hit && Date.now() < hit.exp) return res.json({ ...hit.data, cached: true });
-    // 共有キャッシュ（Redis）: 全ユーザー・全インスタンスで同じ予想を返す
-    const shared = await redisCmd('GET', `predict:${cacheKey}`);
-    if (shared) {
-      try {
-        const data = JSON.parse(shared);
-        predictCache.set(cacheKey, { data, exp: Date.now() + 600000 });
-        return res.json({ ...data, cached: true });
-      } catch {}
-    }
+    const hit = await lookupSharedPredict(cacheKey);
+    if (hit) return res.json({ ...hit, cached: true });
+  }
+
+  if (!GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
   }
 
   try {
     // モデルごとに無料枠が独立しているため、混雑時は別モデルへ自動フォールバック
+    // Vercelの実行時間制限(30秒)内に収めるため全体の締切を管理する
+    const deadline = Date.now() + 26000;
     let lastQuota = null;
+    let lastTransient = false;
     for (const model of PREDICT_MODELS) {
+      const budget = deadline - Date.now();
+      if (budget < 3000) { lastTransient = true; break; }
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
       const generationConfig = {
         temperature: 0.7,
@@ -956,15 +983,23 @@ app.post('/api/predict', async (req, res) => {
       if (model.startsWith('gemini-2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 25000);
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      const data = await response.json();
+      const timer = setTimeout(() => controller.abort(), Math.min(20000, budget));
+      let response, data;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        data = await response.json();
+      } catch (e) {
+        clearTimeout(timer);
+        // タイムアウトは一時的な問題として次のモデルへ
+        if (e.name === 'AbortError') { lastTransient = true; continue; }
+        throw e;
+      }
 
       if (data.error) {
         const msg = data.error.message || '';
@@ -974,6 +1009,11 @@ app.post('/api/predict', async (req, res) => {
           const retryAfter = m ? Math.ceil(parseFloat(m[1])) : 60;
           const daily = retryAfter > 300 || /per day|PerDay/i.test(msg);
           lastQuota = { retryAfter, daily };
+          continue;
+        }
+        // 一時的な過負荷（503 / high demand / overloaded）も次のモデルへ
+        if (response.status === 503 || data.error.status === 'UNAVAILABLE' || /high demand|overloaded|try again later/i.test(msg)) {
+          lastTransient = true;
           continue;
         }
         // モデル廃止・未対応も次のモデルへ
@@ -1005,22 +1045,29 @@ app.post('/api/predict', async (req, res) => {
           });
         }
       }
-      const result = { content: [{ text: jsonText }], model };
+      const result = { content: [{ text: jsonText }], model, at: new Date().toISOString() };
       if (cacheKey) {
         for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
-        predictCache.set(cacheKey, { data: result, exp: Date.now() + 600000 });
-        redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '600');
+        // 60分共有: 誰かが生成した予想をレース締切まで全ユーザーで使い回してAPI消費を抑える
+        predictCache.set(cacheKey, { data: result, exp: Date.now() + 3600000 });
+        redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '3600');
       }
       return res.json(result);
     }
     // 全モデルが利用不可
-    if (!lastQuota) return res.status(500).json({ error: 'AIモデルにアクセスできませんでした。/api/ai-health で状態を確認してください' });
-    return res.status(429).json({
-      error: lastQuota.daily
-        ? '本日のAI無料枠を使い切りました。日本時間の夕方頃にリセットされます。Google AI Studioで従量課金を有効にすると解消できます'
-        : 'AI予想が混み合っています（無料APIの利用上限）',
-      quota: true, daily: !!lastQuota.daily, retryAfter: lastQuota.retryAfter || 60,
-    });
+    if (lastQuota) {
+      return res.status(429).json({
+        error: lastQuota.daily
+          ? '本日のAI無料枠を使い切りました。日本時間の夕方頃にリセットされます。Google AI Studioで従量課金を有効にすると解消できます'
+          : 'AI予想が混み合っています（無料APIの利用上限）',
+        quota: true, daily: !!lastQuota.daily, retryAfter: lastQuota.retryAfter || 60,
+      });
+    }
+    if (lastTransient) {
+      // Gemini側の一時過負荷: 30秒後の自動再試行をフロントに促す
+      return res.status(429).json({ error: 'AIモデルが一時的に混雑しています。しばらくすると自動で再試行します', quota: true, daily: false, retryAfter: 25 });
+    }
+    return res.status(500).json({ error: 'AIモデルにアクセスできませんでした。/api/ai-health で状態を確認してください' });
   } catch (e) {
     const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました(25秒)' : e.message;
     res.status(500).json({ error: msg });
