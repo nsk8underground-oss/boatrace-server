@@ -519,8 +519,11 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.5';
-document.addEventListener('DOMContentLoaded', () => { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; });
+const APP_VERSION = 'v3.6';
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
+  setTimeout(() => { try { autoCheckResults().catch(() => {}); } catch {} }, 8000); // 起動後に未確認結果を自動照合
+});
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
 function escapeHtml(s) {
@@ -754,6 +757,46 @@ function clearHistory() {
   localStorage.removeItem(HIST_KEY); buildHistory();
 }
 
+/* ===== 結果の自動照合: 未確認の履歴をサーバー結果と突き合わせて的中判定 ===== */
+let autoCheckRunning = false;
+async function autoCheckResults() {
+  if (autoCheckRunning) return;
+  autoCheckRunning = true;
+  try {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - 3 * 24 * 3600 * 1000);
+    const cutoffHd = `${cutoff.getFullYear()}${String(cutoff.getMonth()+1).padStart(2,'0')}${String(cutoff.getDate()).padStart(2,'0')}`;
+    const hist = getHistory();
+    // 直近3日以内で結果未取得のものだけ、最大12件ずつ照合
+    const targets = hist.filter(h => !h.result && h.hd && h.hd >= cutoffHd && h.jcd).slice(0, 12);
+    if (!targets.length) return;
+    let updated = 0;
+    for (const h of targets) {
+      try {
+        const res = await fetch(`${SERVER_URL}/api/result?jcd=${h.jcd}&hd=${h.hd}&rno=${h.rno}`, { signal: AbortSignal.timeout(15000) });
+        const d = await res.json();
+        if (!d.order || d.order.length < 3) continue; // レース未了
+        const tri = d.order.slice(0, 3).map(o => o.lane).join('-');
+        const pay = d.payouts?.find(p => p.type === '3連単')?.pay || 0;
+        h.result = tri;
+        h.pay3t  = pay;
+        const mh = (h.matoi || []).includes(tri);
+        const ah = (h.ana   || []).includes(tri);
+        h.hit = mh ? 'matoi' : ah ? 'ana' : 'none';
+        if (mh || ah) h.payout = pay;
+        updated++;
+      } catch {}
+    }
+    if (updated) {
+      localStorage.setItem(HIST_KEY, JSON.stringify(hist));
+      buildHistory();
+      showToast(`✅ ${updated}件の結果を自動照合しました`);
+    }
+  } finally {
+    autoCheckRunning = false;
+  }
+}
+
 function buildHistory() {
   const el = document.getElementById('histList');
   if (!el) return;
@@ -763,26 +806,46 @@ function buildHistory() {
     return;
   }
   const total = history.length;
-  const hit = history.filter(h => h.hit === 'matoi' || h.hit === 'ana').length;
+  const judged = history.filter(h => h.hit === 'matoi' || h.hit === 'ana' || h.hit === 'none');
+  const hits   = judged.filter(h => h.hit === 'matoi' || h.hit === 'ana');
+  const matoiHits = judged.filter(h => h.hit === 'matoi').length;
+  const anaHits   = judged.filter(h => h.hit === 'ana').length;
   const payout = history.reduce((s, h) => s + (h.payout || 0), 0);
-  const rate = total ? Math.round(hit / total * 100) : 0;
+  const rate = judged.length ? Math.round(hits.length / judged.length * 100) : 0;
+  // 回収率: 16点×100円=1600円/レースを判定済み全レースに投資したと仮定
+  const invested = judged.length * 1600;
+  const roi = invested ? Math.round(payout / invested * 100) : 0;
+  const roiColor = roi >= 100 ? 'var(--accent2)' : roi >= 75 ? 'var(--gold)' : 'var(--red)';
   el.innerHTML = `
     <div class="hist-stats">
       <div class="hs-item"><div class="hs-lbl">総予想</div><div class="hs-val">${total}</div></div>
-      <div class="hs-item"><div class="hs-lbl">的中</div><div class="hs-val" style="color:var(--accent2)">${hit}</div></div>
+      <div class="hs-item"><div class="hs-lbl">的中</div><div class="hs-val" style="color:var(--accent2)">${hits.length}/${judged.length}</div></div>
       <div class="hs-item"><div class="hs-lbl">的中率</div><div class="hs-val" style="color:var(--gold)">${rate}%</div></div>
       <div class="hs-item"><div class="hs-lbl">総払戻</div><div class="hs-val" style="color:var(--orange)">¥${payout.toLocaleString()}</div></div>
     </div>
+    <div style="margin:0 14px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+        <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">💰 回収率シミュレーション<br><span style="font-size:9px">全16点×100円（1レース¥1,600）購入と仮定</span></div>
+        <div style="text-align:right">
+          <div style="font-size:20px;font-weight:700;font-family:var(--mono);color:${roiColor}">${roi}%</div>
+          <div style="font-size:9px;color:var(--muted);font-family:var(--mono)">投資¥${invested.toLocaleString()} → 回収¥${payout.toLocaleString()}</div>
+        </div>
+      </div>
+      <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:6px">内訳: ◎本線${matoiHits}回 / ★穴${anaHits}回${judged.length < total ? ` ・ 未確認${total - judged.length}件` : ''}</div>
+    </div>
+    <div style="margin:0 14px 8px"><button class="exhibit-btn" style="width:100%" onclick="autoCheckResults()">🔄 未確認の結果を一括照合</button></div>
     ${history.map(h => {
       const d = h.hd ? `${h.hd.slice(4,6)}/${h.hd.slice(6,8)}` : '';
       const hitCls = h.hit === 'matoi' || h.hit === 'ana' ? 'hit' : h.hit === 'none' ? 'miss' : '';
       const hitTxt = h.hit === 'matoi' ? '◎的中' : h.hit === 'ana' ? '★的中' : h.hit === 'none' ? '❌ハズレ' : '⊙未確認';
+      const resultLine = h.result ? `<div style="font-size:11px;padding:2px 12px;font-family:var(--mono)"><span style="color:var(--muted)">結果:</span> <span style="color:var(--gold);font-weight:700">${h.result}</span>${h.pay3t ? ` <span style="color:var(--muted)">¥${h.pay3t.toLocaleString()}</span>` : ''}</div>` : '';
       return `<div class="hist-card">
         <div class="hist-hdr">
           <div class="hist-race">${h.venue||'—'} ${h.rno}R</div>
           <div class="hist-date">${d}</div>
           <div class="hist-result ${hitCls}">${hitTxt}</div>
         </div>
+        ${resultLine}
         <div class="hist-combos-row"><span class="pred-section-lbl matoi" style="font-size:9px;padding:2px 6px;flex-shrink:0">的中重視</span><span class="hist-combo-txt">${(h.matoi||[]).join(' / ')}</span></div>
         <div class="hist-combos-row" style="margin-top:3px"><span class="pred-section-lbl ana" style="font-size:9px;padding:2px 6px;flex-shrink:0">穴予想</span><span class="hist-combo-txt">${(h.ana||[]).join(' / ')}</span></div>
         ${h.payout ? `<div style="font-size:11px;color:var(--gold);padding:4px 12px">払戻: ¥${(h.payout||0).toLocaleString()}</div>` : ''}
@@ -1610,6 +1673,20 @@ async function runPredict(auto = false) {
   const tAdv    = tideAdvice[tide]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
   const weather = raceData?.weather || {};
 
+  // 3連単オッズを先読みしてAIに渡す — 市場の人気と実力データの乖離（妙味）を判断させる
+  let odds3tPre = null;
+  if (!auto) {
+    try {
+      const r3 = await fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(12000) });
+      const o3 = (await r3.json()).odds || {};
+      if (Object.keys(o3).length) odds3tPre = o3;
+    } catch {}
+  }
+  const oddsTop = odds3tPre
+    ? Object.entries(odds3tPre).sort((a, b) => a[1] - b[1]).slice(0, 10).map(([k, v], i) => `${i+1}番人気:${k}(${v}倍)`).join(' ')
+    : '';
+  const oddsLine = oddsTop ? `\n【3連単オッズ上位10＝市場の人気】\n${oddsTop}\n` : '';
+
   const prompt = `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
 【${VENUE_NAME} 第${currentRace}レース】
@@ -1622,7 +1699,7 @@ ${fixLine}
 
 【出走表（boatrace.jp 実データ）】
 ${lines}
-
+${oddsLine}
 以下のJSON形式のみで回答（バッククォート不要）:
 {
   "analysis": "280文字以内の総合分析",
@@ -1640,6 +1717,8 @@ ${lines}
 }
 matoiは三連単の的中重視フォーメーション8点（本命軸から相手を広げた買い目構成。例: 1-2-全 + 1-3-2など）、
 anaは高配当を狙う穴フォーメーション8点（本線と重複しない並び。オッズ50倍以上を意識）。
+オッズ情報がある場合: 市場の人気と選手・モーター・展示の実力データに乖離がある並びは
+「過小評価された妙味」として積極的に評価し、特にana8点に活かすこと。
 全て "艇番-艇番-艇番" 形式（例: "1-2-3"）で記載。matoi内・ana内で重複なし。
 tenkai_mainとtenkai_anaは、それぞれの買い目が的中する展開条件を対比が分かるように描写。
 main_confとana_confの合計が100になる必要はない（それぞれ独立した確度）。`;
@@ -1650,7 +1729,7 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
       auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry({ prompt, cacheKey }, s => {
         aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
       }),
-      fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
+      odds3tPre ? Promise.resolve(null) : fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
       fetch(`${SERVER_URL}/api/odds2t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
       fetch(`${SERVER_URL}/api/odds3f?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
     ]);
@@ -1670,8 +1749,8 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
       tag.textContent = 'キャッシュ済み';
       tag.style.display = data.cached ? 'inline' : 'none';
     }
-    let odds3t = {}, odds2t = {}, odds3f = {};
-    if (odds3tResp.status === 'fulfilled') { try { odds3t = (await odds3tResp.value.json()).odds || {}; } catch {} }
+    let odds3t = odds3tPre || {}, odds2t = {}, odds3f = {};
+    if (!odds3tPre && odds3tResp.status === 'fulfilled' && odds3tResp.value) { try { odds3t = (await odds3tResp.value.json()).odds || {}; } catch {} }
     if (odds2tResp.status === 'fulfilled') { try { odds2t = (await odds2tResp.value.json()).odds || {}; } catch {} }
     if (odds3fResp.status === 'fulfilled') { try { odds3f = (await odds3fResp.value.json()).odds || {}; } catch {} }
     const raw = data.content.map(c=>c.text||'').join('').replace(/```json|```/g,'').trim();
@@ -1929,7 +2008,7 @@ function showPage(name, btn) {
   document.getElementById('page-'+name).classList.add('active');
   btn.classList.add('active');
   if (name === 'predict') { buildOddsPanel(); if (raceData) runPredict(true).catch(() => {}); }
-  if (name === 'history') buildHistory();
+  if (name === 'history') { buildHistory(); autoCheckResults().catch(() => {}); }
 }
 
 /* ======================== CLOCK ======================== */
