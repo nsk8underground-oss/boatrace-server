@@ -316,6 +316,7 @@ input,select{font-family:var(--sans);}
           <span id="srvTxt">サーバー確認中...</span>
         </span>
         <span style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-left:6px" id="appVersion"></span>
+        <span style="font-size:9px;color:var(--accent2);font-family:var(--mono);margin-left:6px;cursor:pointer" id="nickChip" onclick="setNickname()">👤 —</span>
       </div>
     </div>
   </div>
@@ -531,9 +532,10 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.7';
+const APP_VERSION = 'v3.8';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
+  renderNickChip();
   setTimeout(() => { try { autoCheckResults().catch(() => {}); } catch {} }, 8000); // 起動後に未確認結果を自動照合
   setTimeout(() => { try { loadDashboard(); } catch {} }, 1200); // 全場ダッシュボード初期表示
   setInterval(() => { try { loadDashboard(); } catch {} }, 120000); // 2分ごとに締切カウントを更新
@@ -542,6 +544,23 @@ document.addEventListener('DOMContentLoaded', () => {
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+/* ======================== NICKNAME ======================== */
+function getNickname() {
+  return (localStorage.getItem('br_nickname') || '').slice(0, 12);
+}
+function setNickname() {
+  const cur = getNickname();
+  const name = prompt('ニックネームを入力してください（12文字まで）\nモーター評価や共有予想に表示されます', cur);
+  if (name === null) return;
+  localStorage.setItem('br_nickname', name.trim().slice(0, 12));
+  renderNickChip();
+  showToast(getNickname() ? `👤 ${getNickname()} として記録されます` : 'ニックネームを未設定にしました');
+}
+function renderNickChip() {
+  const el = document.getElementById('nickChip');
+  if (el) el.textContent = `👤 ${getNickname() || '名前未設定'}`;
 }
 
 /* ======================== STATE ======================== */
@@ -693,7 +712,7 @@ function renderMotorList() {
       <div class="ml-mno">No.${e.motorNo}</div>
       <div class="ml-info">
         <div class="ml-name">${escapeHtml(e.racerName) || '—'}</div>
-        <div class="ml-meta">${[m2r, updAt].filter(Boolean).join(' · ')}</div>
+        <div class="ml-meta">${[m2r, updAt, e.by ? '👤' + escapeHtml(e.by) : ''].filter(Boolean).join(' · ')}</div>
         ${e.note ? `<div class="ml-note">📝 ${escapeHtml(e.note)}</div>` : ''}
       </div>
       <div style="text-align:center;margin-right:4px">
@@ -717,7 +736,7 @@ function mlClickGrade(motorNo, g) {
   fetch(`${SERVER_URL}/api/motors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jcd: VENUE_JCD, motorNo, grade: ng, note: d.note || '', racerName: d.racerName || '', motor2Rate: d.motor2Rate || null }),
+    body: JSON.stringify({ jcd: VENUE_JCD, motorNo, grade: ng, note: d.note || '', racerName: d.racerName || '', motor2Rate: d.motor2Rate || null, by: getNickname() }),
   }).catch(() => {});
   // 出走表も更新
   const racer = raceData?.racers?.find(r => String(r.motorNo) === String(motorNo));
@@ -1469,9 +1488,10 @@ function buildEntryList(racers) {
     const shared = r.motorNo && sharedMotors[r.motorNo];
     const isShared = shared?.grade && !localGrade;
     const updAt = shared?.updatedAt ? new Date(shared.updatedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}) : '';
+    const byTxt = shared?.by ? ' ' + escapeHtml(shared.by) : '';
     const sharedBadge = isShared
-      ? `<span style="font-size:8px;color:var(--accent2);font-family:var(--mono);background:rgba(0,180,255,0.12);padding:1px 5px;border-radius:3px;border:1px solid rgba(0,180,255,0.3)">🌐 共有${updAt?' '+updAt:''}</span>`
-      : (shared?.grade ? `<span style="font-size:8px;color:var(--muted);font-family:var(--mono)">🌐 ${updAt}</span>` : '');
+      ? `<span style="font-size:8px;color:var(--accent2);font-family:var(--mono);background:rgba(0,180,255,0.12);padding:1px 5px;border-radius:3px;border:1px solid rgba(0,180,255,0.3)">🌐${byTxt} ${updAt||''}</span>`
+      : (shared?.grade ? `<span style="font-size:8px;color:var(--muted);font-family:var(--mono)">🌐${byTxt} ${updAt}</span>` : '');
     const odds     = r.odds != null ? r.odds.toFixed(1) : '—';
     const motorInfo = r.motorNo ? `No.${r.motorNo} 2連:${r.motor2Rate?.toFixed(1)||0}%` : '';
 
@@ -1533,9 +1553,9 @@ function clickMG(lane, g) {
     fetch(`${SERVER_URL}/api/motors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: ng, note, racerName: racer.name || '', motor2Rate: racer.motor2Rate || null }),
+      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: ng, note, racerName: racer.name || '', motor2Rate: racer.motor2Rate || null, by: getNickname() }),
     }).then(() => {
-      if (ng) sharedMotors[racer.motorNo] = { grade: ng, note, racerName: racer.name || '', motor2Rate: racer.motor2Rate || null };
+      if (ng) sharedMotors[racer.motorNo] = { grade: ng, note, racerName: racer.name || '', motor2Rate: racer.motor2Rate || null, by: getNickname() };
       else delete sharedMotors[racer.motorNo];
     }).catch(() => {});
   }
@@ -1551,7 +1571,7 @@ function saveNote(lane) {
     fetch(`${SERVER_URL}/api/motors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: md.grade, note }),
+      body: JSON.stringify({ jcd: VENUE_JCD, motorNo: racer.motorNo, grade: md.grade, note, by: getNickname() }),
     }).catch(() => {});
   }
   debouncedToast();
@@ -1786,7 +1806,7 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
   try {
     const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
     const [predictResp, odds3tResp, odds2tResp, odds3fResp] = await Promise.allSettled([
-      auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry({ prompt, cacheKey }, s => {
+      auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry({ prompt, cacheKey, by: getNickname() }, s => {
         aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
       }),
       odds3tPre ? Promise.resolve(null) : fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
@@ -1803,7 +1823,7 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
     const tag = document.getElementById('cacheTag');
     if (data.cached && data.at) {
       const t = new Date(data.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-      tag.textContent = `🌐 共有予想（${t}生成）`;
+      tag.textContent = `🌐 共有予想（${t}${data.by ? ' ' + data.by : ''}生成）`;
       tag.style.display = 'inline';
     } else {
       tag.textContent = 'キャッシュ済み';
