@@ -771,11 +771,11 @@ app.get('/api/motors', async (req, res) => {
 });
 
 app.post('/api/motors', async (req, res) => {
-  const { jcd, motorNo, grade, note, racerName, motor2Rate } = req.body;
+  const { jcd, motorNo, grade, note, racerName, motor2Rate, by } = req.body;
   if (!jcd || !motorNo) return res.status(400).json({ error: 'jcd and motorNo required' });
   if (grade && !['S','A','B','C','D'].includes(grade)) return res.status(400).json({ error: '無効なグレード' });
   try {
-    const val = JSON.stringify({ grade: grade || '', note: String(note || '').slice(0, 200), racerName: String(racerName || '').slice(0, 50), motor2Rate: motor2Rate || null, updatedAt: new Date().toISOString() });
+    const val = JSON.stringify({ grade: grade || '', note: String(note || '').slice(0, 200), racerName: String(racerName || '').slice(0, 50), motor2Rate: motor2Rate || null, by: String(by || '').slice(0, 12), updatedAt: new Date().toISOString() });
     await redisCmd('HSET', `motors:${jcd}`, String(motorNo), val);
     // shared=false は Redis 未設定（ローカル環境など）で共有保存されなかったことを示す
     res.json({ ok: true, shared: REDIS_ENABLED });
@@ -1037,7 +1037,7 @@ app.get('/api/predict-shared', async (req, res) => {
 
 // AI予想エンドポイント（Gemini）
 app.post('/api/predict', async (req, res) => {
-  const { prompt, cacheKey } = req.body;
+  const { prompt, cacheKey, by } = req.body;
   if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
   if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
 
@@ -1132,7 +1132,7 @@ app.post('/api/predict', async (req, res) => {
           });
         }
       }
-      const result = { content: [{ text: jsonText }], model, at: new Date().toISOString() };
+      const result = { content: [{ text: jsonText }], model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
       if (cacheKey) {
         for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
         // 60分共有: 誰かが生成した予想をレース締切まで全ユーザーで使い回してAPI消費を抑える
