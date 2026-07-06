@@ -495,6 +495,76 @@ app.get('/api/today', async (req, res) => {
   }
 });
 
+// 全場ダッシュボード: 本日の開催場ごとの「次のレース」締切時刻と共有予想の有無
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    const jst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+    const hd = `${jst.getFullYear()}${String(jst.getMonth()+1).padStart(2,'0')}${String(jst.getDate()).padStart(2,'0')}`;
+    const nowMin = jst.getHours() * 60 + jst.getMinutes();
+
+    const mem = raceCache.get(`dash:${hd}`);
+    if (mem && Date.now() < mem.exp) return res.json(mem.data);
+
+    // 開催場一覧: Redis 10分キャッシュ → トップページのスクレイピング
+    let open = [];
+    const rawOpen = await redisCmd('GET', `openvenues:${hd}`);
+    if (rawOpen) { try { open = JSON.parse(rawOpen); } catch {} }
+    if (!open.length) {
+      const idxHtml = await fetchHtml('https://www.boatrace.jp/owpc/pc/race/').catch(() => null);
+      const $ = cheerio.load(idxHtml || '');
+      const found = new Map();
+      $('a[href*="jcd="]').each((_, el) => {
+        const m = ($(el).attr('href') || '').match(/jcd=(\d{2})/);
+        if (m && VENUES[m[1]] && !found.has(m[1])) found.set(m[1], VENUES[m[1]]);
+      });
+      open = [...found.entries()].map(([jcd, name]) => ({ jcd, name }));
+      if (open.length) redisCmd('SET', `openvenues:${hd}`, JSON.stringify(open), 'EX', '600');
+    }
+
+    const venues = await Promise.all(open.map(async ({ jcd, name }) => {
+      // 締切時刻表は当日中は変わらないためRedisに1日キャッシュ
+      let schedule = null;
+      const raw = await redisCmd('GET', `sched:${jcd}:${hd}`);
+      if (raw) { try { schedule = JSON.parse(raw); } catch {} }
+      if (!schedule) {
+        try {
+          const html = await fetchHtml(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`);
+          if (html) {
+            const rl = parseRacelist(html, jcd, hd, '1');
+            if (rl.schedule?.length) {
+              schedule = rl.schedule;
+              redisCmd('SET', `sched:${jcd}:${hd}`, JSON.stringify(schedule), 'EX', '86400');
+            }
+          }
+        } catch {}
+      }
+      if (!schedule || !schedule.length) return { jcd, name, status: 'unknown' };
+
+      // 次のレース = 締切+12分を過ぎていない最初のレース
+      let next = null;
+      for (const r of schedule) {
+        const [h, m] = (r.time || '0:0').split(':').map(Number);
+        if (nowMin < h * 60 + m + 12) { next = r; break; }
+      }
+      if (!next) return { jcd, name, status: 'ended' };
+
+      // そのレースの共有予想があるか（展示反映後ex1を優先して確認）
+      let shared = false;
+      for (const ex of ['ex1', 'ex0']) {
+        if (await lookupSharedPredict(`v4_${jcd}_${hd}_${next.rno}_0_${ex}`)) { shared = true; break; }
+      }
+      const [h, m] = next.time.split(':').map(Number);
+      return { jcd, name, status: 'open', nextRno: next.rno, nextTime: next.time, minsLeft: h * 60 + m - nowMin, shared };
+    }));
+
+    const data = { hd, venues, fetchedAt: new Date().toISOString() };
+    raceCache.set(`dash:${hd}`, { data, exp: Date.now() + 60000 });
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/odds', async (req, res) => {
   const { jcd, hd, rno = '1' } = req.query;
   const err = validateParams(jcd, hd);

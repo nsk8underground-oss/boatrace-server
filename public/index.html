@@ -287,6 +287,15 @@ input,select{font-family:var(--sans);}
 .ml-note{font-size:10px;color:var(--muted);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100px;}
 .ml-btns{display:flex;gap:3px;flex-shrink:0;}
 .ml-empty{text-align:center;padding:40px 20px;color:var(--muted);font-size:13px;}
+.vdash-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:0 14px 6px;}
+.vd-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 4px;text-align:center;cursor:pointer;position:relative;}
+.vd-card.active{border-color:var(--accent);background:rgba(0,180,255,0.08);}
+.vd-card.ended{opacity:0.4;cursor:default;}
+.vd-name{font-size:11px;font-weight:700;}
+.vd-race{font-family:var(--mono);font-size:13px;color:var(--accent2);font-weight:700;margin-top:2px;}
+.vd-time{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:1px;}
+.vd-soon{color:var(--red);font-weight:700;}
+.vd-shared{position:absolute;top:3px;right:5px;font-size:9px;}
 .race-chip.ended{opacity:0.4;}
 .race-chip.ended .chip-num{text-decoration:line-through;}
 .chip-end{font-size:8px;color:var(--red);font-family:var(--mono);font-weight:700;margin-top:1px;letter-spacing:0.05em;}
@@ -327,6 +336,9 @@ input,select{font-family:var(--sans);}
       <input type="date" class="date-input" id="dateInput">
       <button class="go-btn" onclick="fetchAllData()">取得</button>
     </div>
+    <div class="sec">🏟 本日の開催場 <span style="color:var(--accent2);font-size:9px">— タップで次のレースへ</span><button class="exhibit-btn" style="margin-left:4px" onclick="loadDashboard()">⟳ 更新</button></div>
+    <div id="venueDash" class="vdash-grid"></div>
+
     <div class="sec">本日のレース</div>
     <div id="raceScroll" class="race-scroll"></div>
     <div id="raceStateBox"></div>
@@ -519,10 +531,12 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.6';
+const APP_VERSION = 'v3.7';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   setTimeout(() => { try { autoCheckResults().catch(() => {}); } catch {} }, 8000); // 起動後に未確認結果を自動照合
+  setTimeout(() => { try { loadDashboard(); } catch {} }, 1200); // 全場ダッシュボード初期表示
+  setInterval(() => { try { loadDashboard(); } catch {} }, 120000); // 2分ごとに締切カウントを更新
 });
 
 // 共有データ（他ユーザーのメモ・選手名）をHTMLに埋め込む前に必ず通す
@@ -1257,6 +1271,52 @@ function showToast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+/* ======================== VENUE DASHBOARD ======================== */
+async function loadDashboard() {
+  const el = document.getElementById('venueDash');
+  if (!el) return;
+  try {
+    const res = await fetch(`${SERVER_URL}/api/dashboard`, { signal: AbortSignal.timeout(30000) });
+    const d = await res.json();
+    if (!d.venues || !d.venues.length) {
+      el.innerHTML = '<div style="grid-column:1/-1;padding:8px;text-align:center;font-size:11px;color:var(--muted)">本日の開催情報を取得できませんでした</div>';
+      return;
+    }
+    // 開催中を締切の近い順に、終了場は最後に
+    const sorted = d.venues.slice().sort((a, b) => {
+      if (a.status === 'open' && b.status !== 'open') return -1;
+      if (a.status !== 'open' && b.status === 'open') return 1;
+      return (a.minsLeft ?? 999) - (b.minsLeft ?? 999);
+    });
+    el.innerHTML = sorted.map(v => {
+      if (v.status !== 'open') {
+        return `<div class="vd-card ended"><div class="vd-name">${v.name}</div><div class="vd-time">${v.status === 'ended' ? '本日終了' : '—'}</div></div>`;
+      }
+      const soon = v.minsLeft <= 10;
+      const left = v.minsLeft > 0 ? `あと${v.minsLeft}分` : '締切間近';
+      return `<div class="vd-card${v.jcd === VENUE_JCD ? ' active' : ''}" onclick="dashGo('${v.jcd}','${v.name}',${v.nextRno})">
+        ${v.shared ? '<span class="vd-shared">🌐</span>' : ''}
+        <div class="vd-name">${v.name}</div>
+        <div class="vd-race">${v.nextRno}R</div>
+        <div class="vd-time${soon ? ' vd-soon' : ''}">${v.nextTime} ${left}</div>
+      </div>`;
+    }).join('');
+  } catch {
+    el.innerHTML = '';
+  }
+}
+
+function dashGo(jcd, name, rno) {
+  // 日付を今日に合わせてから場・レースを切り替え
+  const t = new Date();
+  document.getElementById('dateInput').value = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+  const sel = document.getElementById('venueSelect');
+  if (sel) sel.value = jcd;
+  applyVenue(jcd, name);
+  fetchRace(rno);
+  loadDashboard();
 }
 
 /* ======================== RACE CHIPS ======================== */
@@ -2007,6 +2067,7 @@ function showPage(name, btn) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
   btn.classList.add('active');
+  if (name === 'race') loadDashboard();
   if (name === 'predict') { buildOddsPanel(); if (raceData) runPredict(true).catch(() => {}); }
   if (name === 'history') { buildHistory(); autoCheckResults().catch(() => {}); }
 }
