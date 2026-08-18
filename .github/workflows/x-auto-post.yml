@@ -1,0 +1,68 @@
+name: X 自動投稿
+
+# GitHub Actions の無料枠で動く定期実行。cron は UTC 指定（JST = UTC+9）
+on:
+  schedule:
+    # JST 10:00〜20:00 の毎時 — 締切が近いレースの予想を1件投稿
+    - cron: '0 1-11 * * *'
+    # JST 21:30 — 本日投稿した予想の結果まとめを投稿
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '投稿モード'
+        default: races
+        type: choice
+        options: [races, results]
+      dryRun:
+        description: '投稿せず本文だけ確認する（手動実行の既定は ON）'
+        default: true
+        type: boolean
+
+# 実行が重ならないようにする
+concurrency:
+  group: x-auto-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 自動投稿エンドポイントを呼び出す
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          IN_MODE: ${{ github.event.inputs.mode }}
+          IN_DRY: ${{ github.event.inputs.dryRun }}
+          SCHED: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "APP_URL / CRON_SECRET が未設定です。リポジトリの Settings > Secrets で登録してください。"
+            exit 1
+          fi
+
+          MODE="races"
+          DRY="false"
+          [ -n "${IN_MODE:-}" ] && MODE="$IN_MODE"
+          [ "${IN_DRY:-}" = "true" ] && DRY="true"
+          # 21:30 JST の枠は結果まとめ
+          [ "${SCHED:-}" = "30 12 * * *" ] && MODE="results"
+
+          URL="${APP_URL%/}/api/auto-post?mode=${MODE}"
+          [ "$DRY" = "true" ] && URL="${URL}&dryRun=1"
+          echo "mode=${MODE} dryRun=${DRY}"
+
+          CODE=$(curl -sS -o response.json -w '%{http_code}' \
+            -X POST "$URL" \
+            -H "x-cron-secret: ${CRON_SECRET}" \
+            -u "guest:${SITE_PASSWORD:-}" \
+            --max-time 120)
+
+          echo "HTTP ${CODE}"
+          cat response.json
+          echo ""
+          if [ "$CODE" != "200" ]; then exit 1; fi
