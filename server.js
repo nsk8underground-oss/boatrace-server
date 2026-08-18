@@ -1,4 +1,5 @@
 const express      = require('express');
+const crypto       = require('crypto');
 const cheerio      = require('cheerio');
 const cors         = require('cors');
 const basicAuth    = require('express-basic-auth');
@@ -1035,26 +1036,16 @@ app.get('/api/predict-shared', async (req, res) => {
   }
 });
 
-// AI予想エンドポイント（Gemini）
-app.post('/api/predict', async (req, res) => {
-  const { prompt, cacheKey, by } = req.body;
-  if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
-  if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
-
-  // 共有キャッシュにあればGemini不要（APIキー未設定でも返せる）
-  if (cacheKey) {
-    const hit = await lookupSharedPredict(cacheKey);
-    if (hit) return res.json({ ...hit, cached: true });
-  }
-
+// Gemini呼び出し（モデル自動フォールバック付き）
+// 成功: { ok:true, jsonText, model } / 失敗: { ok:false, status, body }
+// budgetMs は全モデル試行の合計上限（Vercelの30秒制限内に収めるため）
+async function callGemini(prompt, budgetMs = 26000) {
   if (!GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'サーバーに GEMINI_API_KEY が設定されていません' });
+    return { ok: false, status: 500, body: { error: 'サーバーに GEMINI_API_KEY が設定されていません' } };
   }
-
   try {
     // モデルごとに無料枠が独立しているため、混雑時は別モデルへ自動フォールバック
-    // Vercelの実行時間制限(30秒)内に収めるため全体の締切を管理する
-    const deadline = Date.now() + 26000;
+    const deadline = Date.now() + budgetMs;
     let lastQuota = null;
     let lastTransient = false;
     for (const model of PREDICT_MODELS) {
@@ -1106,15 +1097,15 @@ app.post('/api/predict', async (req, res) => {
         // モデル廃止・未対応も次のモデルへ
         if (response.status === 404 || /not found|not supported/i.test(msg)) continue;
         if (/api key|API_KEY/i.test(msg)) {
-          return res.status(500).json({ error: 'Gemini APIキーが無効です。Vercelの環境変数 GEMINI_API_KEY に正しいキーが設定されているか確認してください' });
+          return { ok: false, status: 500, body: { error: 'Gemini APIキーが無効です。Vercelの環境変数 GEMINI_API_KEY に正しいキーが設定されているか確認してください' } };
         }
-        return res.status(500).json({ error: `Gemini: ${msg}` });
+        return { ok: false, status: 500, body: { error: `Gemini: ${msg}` } };
       }
 
       const text = data.candidates?.[0]?.content?.parts
         ?.filter(p => !p.thought)
         .map(p => p.text || '').join('') || '';
-      if (!text) return res.status(500).json({ error: 'Geminiから空のレスポンスが返りました' });
+      if (!text) return { ok: false, status: 500, body: { error: 'Geminiから空のレスポンスが返りました' } };
       // JSONとして壊れていたら {} の範囲を抽出して修復を試みる
       let jsonText = text;
       try {
@@ -1125,39 +1116,376 @@ app.post('/api/predict', async (req, res) => {
         if (jm) { try { JSON.parse(jm[0]); jsonText = jm[0]; } catch {} }
         if (!jsonText) {
           const reason = data.candidates?.[0]?.finishReason;
-          return res.status(500).json({
+          return { ok: false, status: 500, body: {
             error: reason === 'MAX_TOKENS'
               ? 'AIの回答が途中で切れました。もう一度お試しください'
               : 'GeminiのレスポンスがJSON形式ではありません。もう一度お試しください',
-          });
+          } };
         }
       }
-      const result = { content: [{ text: jsonText }], model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
-      if (cacheKey) {
-        for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
-        // 60分共有: 誰かが生成した予想をレース締切まで全ユーザーで使い回してAPI消費を抑える
-        predictCache.set(cacheKey, { data: result, exp: Date.now() + 3600000 });
-        redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '3600');
-      }
-      return res.json(result);
+      return { ok: true, jsonText, model };
     }
     // 全モデルが利用不可
     if (lastQuota) {
-      return res.status(429).json({
+      return { ok: false, status: 429, body: {
         error: lastQuota.daily
           ? '本日のAI無料枠を使い切りました。日本時間の夕方頃にリセットされます。Google AI Studioで従量課金を有効にすると解消できます'
           : 'AI予想が混み合っています（無料APIの利用上限）',
         quota: true, daily: !!lastQuota.daily, retryAfter: lastQuota.retryAfter || 60,
-      });
+      } };
     }
     if (lastTransient) {
-      // Gemini側の一時過負荷: 30秒後の自動再試行をフロントに促す
-      return res.status(429).json({ error: 'AIモデルが一時的に混雑しています。しばらくすると自動で再試行します', quota: true, daily: false, retryAfter: 25 });
+      // Gemini側の一時過負荷: 少し待っての自動再試行をフロントに促す
+      return { ok: false, status: 429, body: { error: 'AIモデルが一時的に混雑しています。しばらくすると自動で再試行します', quota: true, daily: false, retryAfter: 25 } };
     }
-    return res.status(500).json({ error: 'AIモデルにアクセスできませんでした。/api/ai-health で状態を確認してください' });
+    return { ok: false, status: 500, body: { error: 'AIモデルにアクセスできませんでした。/api/ai-health で状態を確認してください' } };
   } catch (e) {
-    const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました(25秒)' : e.message;
-    res.status(500).json({ error: msg });
+    const msg = e.name === 'AbortError' ? 'Gemini APIがタイムアウトしました' : e.message;
+    return { ok: false, status: 500, body: { error: msg } };
+  }
+}
+
+// 生成結果を共有キャッシュ（メモリ60分 + Redis 60分）に保存
+function storePredict(cacheKey, result) {
+  if (!cacheKey) return;
+  for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
+  predictCache.set(cacheKey, { data: result, exp: Date.now() + 3600000 });
+  redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '3600');
+}
+
+// AI予想エンドポイント（Gemini）
+app.post('/api/predict', async (req, res) => {
+  const { prompt, cacheKey, by } = req.body;
+  if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
+  if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
+
+  // 共有キャッシュにあればGemini不要（APIキー未設定でも返せる）
+  if (cacheKey) {
+    const hit = await lookupSharedPredict(cacheKey);
+    if (hit) return res.json({ ...hit, cached: true });
+  }
+
+  const r = await callGemini(prompt);
+  if (!r.ok) return res.status(r.status).json(r.body);
+  const result = { content: [{ text: r.jsonText }], model: r.model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
+  storePredict(cacheKey, result);
+  res.json(result);
+});
+
+/* ======================== X (Twitter) AUTO POST ======================== */
+const X_API_KEY       = process.env.X_API_KEY || '';
+const X_API_SECRET    = process.env.X_API_SECRET || '';
+const X_ACCESS_TOKEN  = process.env.X_ACCESS_TOKEN || '';
+const X_ACCESS_SECRET = process.env.X_ACCESS_SECRET || '';
+const CRON_SECRET     = process.env.CRON_SECRET || '';
+const X_ENABLED = !!(X_API_KEY && X_API_SECRET && X_ACCESS_TOKEN && X_ACCESS_SECRET);
+
+// RFC3986 パーセントエンコード（OAuth署名は encodeURIComponent より厳格）
+function pctEnc(s) {
+  return encodeURIComponent(String(s)).replace(/[!*'()]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+// OAuth 1.0a (HMAC-SHA1) 署名値の計算（RFC 5849）。allParams には oauth_* とクエリを全て含める
+function oauth1Signature(method, url, allParams, consumerSecret, tokenSecret) {
+  const paramStr = Object.keys(allParams).sort().map(k => `${pctEnc(k)}=${pctEnc(allParams[k])}`).join('&');
+  const base = [method.toUpperCase(), pctEnc(url), pctEnc(paramStr)].join('&');
+  const key = `${pctEnc(consumerSecret)}&${pctEnc(tokenSecret)}`;
+  return crypto.createHmac('sha1', key).update(base).digest('base64');
+}
+
+// Authorization ヘッダを生成。
+// X API v2 の POST /2/tweets は JSON ボディを署名に含めない（クエリパラメータのみ）
+function oauth1Header(method, url, queryParams = {}) {
+  const oauth = {
+    oauth_consumer_key: X_API_KEY,
+    oauth_nonce: crypto.randomBytes(16).toString('hex'),
+    oauth_signature_method: 'HMAC-SHA1',
+    oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
+    oauth_token: X_ACCESS_TOKEN,
+    oauth_version: '1.0',
+  };
+  oauth.oauth_signature = oauth1Signature(method, url, { ...queryParams, ...oauth }, X_API_SECRET, X_ACCESS_SECRET);
+  return 'OAuth ' + Object.keys(oauth).sort().map(k => `${pctEnc(k)}="${pctEnc(oauth[k])}"`).join(', ');
+}
+
+// Xの重み付き文字数（日本語などは2文字分。上限280）
+function xLen(str) {
+  let n = 0;
+  for (const ch of str) {
+    const c = ch.codePointAt(0);
+    const light = (c <= 4351) || (c >= 8192 && c <= 8205) || (c >= 8208 && c <= 8223) || (c >= 8242 && c <= 8247);
+    n += light ? 1 : 2;
+  }
+  return n;
+}
+
+async function postToX(text) {
+  if (!X_ENABLED) return { ok: false, error: 'X credentials not set' };
+  const url = 'https://api.twitter.com/2/tweets';
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': oauth1Header('POST', url) },
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, status: r.status, error: d.detail || d.title || JSON.stringify(d).slice(0, 200) };
+    return { ok: true, id: d.data?.id };
+  } catch (e) {
+    return { ok: false, error: e.name === 'AbortError' ? 'X APIタイムアウト' : e.message };
+  }
+}
+
+// 自動投稿用の予想プロンプト（フロントと同じJSONスキーマ＝生成結果をアプリでもそのまま共有できる）
+function buildAutoPrompt(venue, rno, racers, weather, odds3t) {
+  const lines = racers.map(r =>
+    `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
+    `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
+    `単勝:${r.odds != null ? r.odds.toFixed(1) + '倍' : '不明'} モーター:${r.motorGrade || '未評価'}(2連${r.motor2Rate || 0}%) ` +
+    `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
+  ).join('\n');
+  const top = Object.entries(odds3t || {}).sort((a, b) => a[1] - b[1]).slice(0, 10)
+    .map(([k, v], i) => `${i + 1}番人気:${k}(${v}倍)`).join(' ');
+  const oddsLine = top ? `\n【3連単オッズ上位10＝市場の人気】\n${top}\n` : '';
+
+  return `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
+
+【${venue} 第${rno}レース】
+天候:${weather.sky || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm
+
+【出走表（boatrace.jp 実データ）】
+${lines}
+${oddsLine}
+以下のJSON形式のみで回答（バッククォート不要）:
+{
+  "analysis": "280文字以内の総合分析",
+  "tenkai_main": "本線展開シナリオ130文字以内。どの艇がどう決まればmatoi8点が的中するか具体的に",
+  "tenkai_ana": "穴展開シナリオ130文字以内。どんな波乱が起きればana8点が飛び出すか具体的に",
+  "main_conf": 本線が的中する信頼度を0〜100の数字で,
+  "ana_conf": 穴展開が起きる可能性を0〜100の数字で,
+  "wind_effect": "90文字以内",
+  "tide_effect": "90文字以内",
+  "motor_comment": "80文字以内",
+  "focus": "注目艇番号（数字のみ）",
+  "focus_reason": "80文字以内",
+  "matoi": ["本線①","本線②","本線③","本線④","本線⑤","本線⑥","本線⑦","本線⑧"],
+  "ana":   ["穴①","穴②","穴③","穴④","穴⑤","穴⑥","穴⑦","穴⑧"]
+}
+matoiは三連単の的中重視フォーメーション8点（本命軸から相手を広げた買い目構成）、
+anaは高配当を狙う穴フォーメーション8点（本線と重複しない並び。オッズ50倍以上を意識）。
+オッズ情報がある場合: 市場の人気と実力データに乖離がある並びは「過小評価された妙味」として
+積極的に評価し、特にana8点に活かすこと。
+全て "艇番-艇番-艇番" 形式（例: "1-2-3"）で記載。matoi内・ana内で重複なし。
+main_confとana_confの合計が100になる必要はない（それぞれ独立した確度）。`;
+}
+
+// 1レース分のデータを集めて予想を取得（共有キャッシュ優先・なければ生成して共有キャッシュに保存）
+async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
+  const venue = VENUES[jcd] || '';
+  const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
+  const [rlR, beforeR, o1R, o3R] = await Promise.allSettled([
+    fetchHtml(`${BASE}/racelist?${q}`),
+    fetchHtml(`${BASE}/beforeinfo?${q}`),
+    fetchParsedOdds([`oddstf?${q}`, `odds1t?${q}`], parseOdds1t),
+    fetchParsedOdds([`odds3t?${q}`], parseOdds3t),
+  ]);
+  const rl = rlR.status === 'fulfilled' && rlR.value ? parseRacelist(rlR.value, jcd, hd, rno) : null;
+  if (!rl || !rl.racers.length) return { error: '出走データなし' };
+  const before = beforeR.status === 'fulfilled' && beforeR.value ? parseBeforeinfo(beforeR.value) : { weather: {}, exhibit: {} };
+  const odds1  = o1R.status === 'fulfilled' ? (o1R.value.odds || {}) : {};
+  const odds3t = o3R.status === 'fulfilled' ? (o3R.value.odds || {}) : {};
+
+  const hasEx = Object.keys(before.exhibit).length > 0;
+  const cacheKey = `v4_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
+  const cached = await lookupSharedPredict(cacheKey);
+  if (cached) {
+    try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, schedule: rl.schedule }; } catch {}
+  }
+
+  // 共有モーター評価をマージ（みんなの評価をAIに渡す）
+  let motors = {};
+  try {
+    const raw = await redisCmd('HGETALL', `motors:${jcd}`);
+    if (Array.isArray(raw)) for (let i = 0; i < raw.length; i += 2) { try { motors[raw[i]] = JSON.parse(raw[i + 1]); } catch {} }
+  } catch {}
+
+  const racers = rl.racers.map(r => ({
+    ...r,
+    odds: odds1[r.lane] ?? null,
+    exhibitTime: before.exhibit[r.lane]?.exhibitTime ?? null,
+    exhibitST: before.exhibit[r.lane]?.st ?? null,
+    motorGrade: motors[r.motorNo]?.grade || '',
+  }));
+
+  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {}, odds3t);
+  const g = await callGemini(prompt, budgetMs);
+  if (!g.ok) return { error: g.body?.error || '予想生成失敗' };
+  const result = { content: [{ text: g.jsonText }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
+  storePredict(cacheKey, result);
+  try { return { pred: JSON.parse(g.jsonText), venue, cached: false, schedule: rl.schedule }; }
+  catch { return { error: '予想の解析に失敗' }; }
+}
+
+// レース予想のツイート本文（280重みに収まるよう展開文を自動短縮）
+function buildRaceTweet(venue, rno, closeTime, pred) {
+  const matoi = (pred.matoi || []).slice(0, 4).join(' ');
+  const ana   = (pred.ana   || []).slice(0, 2).join(' ');
+  const mc = parseInt(pred.main_conf) || 0;
+  const ac = parseInt(pred.ana_conf) || 0;
+  const head =
+    `🚤${venue} ${rno}R 締切${closeTime}\n\n` +
+    `◎本線 信頼度${mc}%\n${matoi}\n\n` +
+    `★穴 信頼度${ac}%\n${ana}\n`;
+  const tail = `\n#競艇 #ボートレース #${venue}`;
+  let tenkai = String(pred.tenkai_main || '').replace(/\s+/g, ' ').trim();
+  const room = 280 - xLen(head) - xLen(tail) - 2;
+  if (room > 20 && tenkai) {
+    while (tenkai && xLen(tenkai) > room) tenkai = tenkai.slice(0, -1);
+    return head + '\n' + tenkai + tail;
+  }
+  return head + tail;
+}
+
+// 本日の投稿分の結果まとめツイート
+function buildResultTweet(hd, rows) {
+  const md = `${parseInt(hd.slice(4, 6))}/${parseInt(hd.slice(6, 8))}`;
+  const judged = rows.filter(r => r.result);
+  const hits = judged.filter(r => r.hit === 'matoi' || r.hit === 'ana');
+  const payout = hits.reduce((s, r) => s + (r.pay || 0), 0);
+  const invested = judged.length * 1600; // 16点×100円想定
+  const roi = invested ? Math.round(payout / invested * 100) : 0;
+  const head = `📊本日のAI予想結果 ${md}\n\n`;
+  const tail = `\n的中 ${hits.length}/${judged.length}　回収率${roi}%\n（本線+穴 計16点×100円想定）\n\n#競艇 #ボートレース`;
+  let body = '';
+  for (const r of judged) {
+    const mark = r.hit === 'matoi' ? '◎的中' : r.hit === 'ana' ? '★的中' : '―';
+    const line = `${r.venue}${r.rno}R ${r.result} ${mark}${r.hit && r.hit !== 'none' && r.pay ? ` ¥${r.pay.toLocaleString()}` : ''}\n`;
+    if (xLen(head + body + line + tail) > 280) break;
+    body += line;
+  }
+  return head + body + tail;
+}
+
+// 自動投稿エンドポイント（GitHub Actions などから定期実行）
+//   mode=races   : 締切が近いレースの予想を投稿
+//   mode=results : 本日投稿した予想の結果まとめを投稿
+//   dryRun=1     : 投稿せず本文だけ返す（X未設定でも動作確認できる）
+app.all('/api/auto-post', async (req, res) => {
+  const secret = req.get('x-cron-secret') || req.query.secret || '';
+  if (!CRON_SECRET || secret !== CRON_SECRET) return res.status(401).json({ error: 'invalid cron secret' });
+
+  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+  const mode = req.query.mode === 'results' ? 'results' : 'races';
+  const jst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  const hd = `${jst.getFullYear()}${String(jst.getMonth() + 1).padStart(2, '0')}${String(jst.getDate()).padStart(2, '0')}`;
+  const nowMin = jst.getHours() * 60 + jst.getMinutes();
+
+  try {
+    if (mode === 'results') {
+      let log = [];
+      try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
+      if (!log.length) return res.json({ ok: true, skipped: '本日の投稿なし' });
+      const rows = [];
+      for (const p of log.slice(0, 8)) {
+        try {
+          const html = await fetchHtml(`${BASE}/raceresult?jcd=${p.jcd}&hd=${hd}&rno=${p.rno}`);
+          if (!html) continue;
+          const r = parseRaceResult(html);
+          if (!r.order || r.order.length < 3) continue;
+          const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
+          const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
+          const hit = (p.matoi || []).includes(tri) ? 'matoi' : (p.ana || []).includes(tri) ? 'ana' : 'none';
+          rows.push({ venue: p.venue, rno: p.rno, result: tri, pay, hit });
+        } catch {}
+      }
+      if (!rows.length) return res.json({ ok: true, skipped: '確定した結果なし' });
+      const text = buildResultTweet(hd, rows);
+      if (dryRun) return res.json({ ok: true, dryRun: true, text, xLen: xLen(text), rows });
+      const posted = await postToX(text);
+      return res.json({ ok: posted.ok, text, posted });
+    }
+
+    // mode=races: 締切15〜90分前のレースを1件だけ投稿（Vercelの30秒制限に収めるため）
+    const minLead = parseInt(req.query.minLead) || 15;
+    const maxLead = parseInt(req.query.maxLead) || 90;
+    const dailyCap = parseInt(req.query.cap) || 8;
+
+    const cnt = parseInt(await redisCmd('GET', `xcount:${hd}`) || '0');
+    if (cnt >= dailyCap) return res.json({ ok: true, skipped: `本日の投稿上限(${dailyCap}件)に到達` });
+
+    // 開催場と締切時刻表（ダッシュボードと同じRedisキャッシュを再利用）
+    let open = [];
+    try { open = JSON.parse(await redisCmd('GET', `openvenues:${hd}`) || '[]'); } catch {}
+    if (!open.length) {
+      const idxHtml = await fetchHtml('https://www.boatrace.jp/owpc/pc/race/').catch(() => null);
+      const $ = cheerio.load(idxHtml || '');
+      const found = new Map();
+      $('a[href*="jcd="]').each((_, el) => {
+        const m = ($(el).attr('href') || '').match(/jcd=(\d{2})/);
+        if (m && VENUES[m[1]] && !found.has(m[1])) found.set(m[1], VENUES[m[1]]);
+      });
+      open = [...found.entries()].map(([jcd, name]) => ({ jcd, name }));
+      if (open.length) redisCmd('SET', `openvenues:${hd}`, JSON.stringify(open), 'EX', '600');
+    }
+    if (!open.length) return res.json({ ok: true, skipped: '本日の開催なし' });
+
+    // 締切が近い順に候補を並べ、未投稿の先頭1件を対象にする
+    const cands = [];
+    for (const { jcd, name } of open) {
+      let schedule = null;
+      try { schedule = JSON.parse(await redisCmd('GET', `sched:${jcd}:${hd}`) || 'null'); } catch {}
+      if (!schedule) {
+        try {
+          const html = await fetchHtml(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`);
+          if (html) {
+            const rl = parseRacelist(html, jcd, hd, '1');
+            if (rl.schedule?.length) {
+              schedule = rl.schedule;
+              redisCmd('SET', `sched:${jcd}:${hd}`, JSON.stringify(schedule), 'EX', '86400');
+            }
+          }
+        } catch {}
+      }
+      if (!schedule) continue;
+      for (const r of schedule) {
+        const [h, m] = (r.time || '0:0').split(':').map(Number);
+        const lead = h * 60 + m - nowMin;
+        if (lead >= minLead && lead <= maxLead) cands.push({ jcd, venue: name, rno: r.rno, time: r.time, lead });
+      }
+    }
+    cands.sort((a, b) => a.lead - b.lead);
+    if (!cands.length) return res.json({ ok: true, skipped: `締切${minLead}〜${maxLead}分前のレースなし` });
+
+    let target = null;
+    for (const c of cands) {
+      const done = await redisCmd('GET', `xposted:${hd}:${c.jcd}:${c.rno}`);
+      if (!done) { target = c; break; }
+    }
+    if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み' });
+
+    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, 16000);
+    if (got.error) return res.json({ ok: false, target, error: got.error });
+
+    const text = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
+    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), predCached: got.cached });
+
+    const posted = await postToX(text);
+    if (posted.ok) {
+      await redisCmd('SET', `xposted:${hd}:${target.jcd}:${target.rno}`, '1', 'EX', '86400');
+      await redisCmd('INCR', `xcount:${hd}`);
+      await redisCmd('EXPIRE', `xcount:${hd}`, '86400');
+      let log = [];
+      try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
+      log.push({ jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: got.pred.matoi || [], ana: got.pred.ana || [] });
+      await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
+    }
+    res.json({ ok: posted.ok, target, text, posted });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
