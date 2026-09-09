@@ -1569,6 +1569,24 @@ app.delete('/api/slot/record', async (req, res) => {
   }
 });
 
+// 診断: ホスティング側のルーティングでリクエストパスが失われた場合に、
+// 素っ気ない404の代わりに受信内容を返して原因を特定できるようにする。
+// （正常時はこのルートに到達しない）
+app.all('/server.js', (req, res) => {
+  const safe = {};
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (/^(x-vercel|x-matched|x-forwarded|x-original|x-now|x-real)/i.test(k) &&
+        !/auth|cookie|token|secret|key/i.test(k)) safe[k] = v;
+  }
+  res.status(500).json({
+    error: 'ルーティングでリクエストパスが失われています',
+    receivedUrl: req.url,
+    method: req.method,
+    headers: safe,
+    hint: 'この内容をそのまま開発者に共有してください',
+  });
+});
+
 // ルートアクセスでダッシュボードを返す
 app.get('/', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, must-revalidate');
