@@ -1411,17 +1411,19 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
 async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
   const venue = VENUES[jcd] || '';
   const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
-  const [rlR, beforeR, o1R, o3R] = await Promise.allSettled([
-    fetchHtml(`${BASE}/racelist?${q}`),
-    fetchHtml(`${BASE}/beforeinfo?${q}`),
-    fetchParsedOdds([`oddstf?${q}`, `odds1t?${q}`], parseOdds1t),
-    fetchParsedOdds([`odds3t?${q}`], parseOdds3t),
+  // 4種を並列取得。fetchHtml（リトライ込み最大20秒）だと Vercel の制限を超えるため
+  // 単発10秒で揃える。オッズは取れなくても予想は生成できる
+  const [rlH, beforeH, o1H, o3H] = await Promise.all([
+    fetchQuick(`${BASE}/racelist?${q}`, 10000),
+    fetchQuick(`${BASE}/beforeinfo?${q}`, 10000),
+    fetchQuick(`${BASE}/oddstf?${q}`, 10000),
+    fetchQuick(`${BASE}/odds3t?${q}`, 10000),
   ]);
-  const rl = rlR.status === 'fulfilled' && rlR.value ? parseRacelist(rlR.value, jcd, hd, rno) : null;
+  const rl = rlH ? parseRacelist(rlH, jcd, hd, rno) : null;
   if (!rl || !rl.racers.length) return { error: '出走データなし' };
-  const before = beforeR.status === 'fulfilled' && beforeR.value ? parseBeforeinfo(beforeR.value) : { weather: {}, exhibit: {} };
-  const odds1  = o1R.status === 'fulfilled' ? (o1R.value.odds || {}) : {};
-  const odds3t = o3R.status === 'fulfilled' ? (o3R.value.odds || {}) : {};
+  const before = beforeH ? parseBeforeinfo(beforeH) : { weather: {}, exhibit: {} };
+  const odds1  = o1H ? (parseOdds1t(o1H).odds || {}) : {};
+  const odds3t = o3H ? (parseOdds3t(o3H).odds || {}) : {};
 
   const hasEx = Object.keys(before.exhibit).length > 0;
   const cacheKey = `v4_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
@@ -1502,6 +1504,8 @@ app.all('/api/auto-post', async (req, res) => {
   const secret = req.get('x-cron-secret') || req.query.secret || '';
   if (!CRON_SECRET || secret !== CRON_SECRET) return res.status(401).json({ error: 'invalid cron secret' });
 
+  // Vercel の30秒制限内で必ず応答を返すための全体締切
+  const tEnd = Date.now() + 26000;
   const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
   const mode = req.query.mode === 'results' ? 'results' : 'races';
   const jst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
@@ -1545,23 +1549,27 @@ app.all('/api/auto-post', async (req, res) => {
     const open = await getOpenVenues(hd);
     if (!open.length) return res.json({ ok: true, skipped: '本日の開催なし' });
 
-    // 締切が近い順に候補を並べ、未投稿の先頭1件を対象にする
-    const cands = [];
-    for (const { jcd, name } of open) {
+    // 締切時刻表は全場ぶんを並列で取得する。
+    // 順番に取ると開催場が多い日（12場など）に Vercel の制限を大きく超えてしまう
+    const scheds = await Promise.all(open.map(async ({ jcd, name }) => {
       let schedule = null;
       try { schedule = JSON.parse(await redisCmd('GET', `sched:${jcd}:${hd}`) || 'null'); } catch {}
       if (!schedule) {
-        try {
-          const html = await fetchHtml(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`);
-          if (html) {
-            const rl = parseRacelist(html, jcd, hd, '1');
-            if (rl.schedule?.length) {
-              schedule = rl.schedule;
-              redisCmd('SET', `sched:${jcd}:${hd}`, JSON.stringify(schedule), 'EX', '86400');
-            }
+        const html = await fetchQuick(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, 10000);
+        if (html) {
+          const rl = parseRacelist(html, jcd, hd, '1');
+          if (rl.schedule?.length) {
+            schedule = rl.schedule;
+            redisCmd('SET', `sched:${jcd}:${hd}`, JSON.stringify(schedule), 'EX', '86400');
           }
-        } catch {}
+        }
       }
+      return { jcd, name, schedule };
+    }));
+
+    // 締切が近い順に候補を並べ、未投稿の先頭1件を対象にする
+    const cands = [];
+    for (const { jcd, name, schedule } of scheds) {
       if (!schedule) continue;
       for (const r of schedule) {
         const [h, m] = (r.time || '0:0').split(':').map(Number);
@@ -1579,7 +1587,14 @@ app.all('/api/auto-post', async (req, res) => {
     }
     if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み' });
 
-    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, 16000);
+    // 残り時間が足りなければ投稿せず終了する（次回の実行で拾う）。
+    // 締切時刻表は取得済みでキャッシュされるので、次回は高速に処理できる
+    // データ取得に最大10秒＋AI生成に最低5秒は要るため、それを下回るなら見送る
+    const remain = tEnd - Date.now();
+    if (remain < 16000) {
+      return res.json({ ok: true, skipped: '準備に時間がかかったため次回の実行で投稿します', target, remainMs: remain });
+    }
+    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(14000, remain - 11000));
     if (got.error) return res.json({ ok: false, target, error: got.error });
 
     const text = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
