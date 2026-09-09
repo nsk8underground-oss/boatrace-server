@@ -553,26 +553,63 @@ async function probeOpenVenues(hd, ms = 15000) {
     .map(x => ({ jcd: x.value, name: VENUES[x.value] }));
 }
 
-// 本日の開催場一覧（Redisキャッシュ → 一覧ページ → 全場プローブ の順に試す）
-// 合計の所要時間は Vercel の30秒制限に収まるよう 6秒 + 15秒 に抑えている
+// プロセス内キャッシュ（同じインスタンスに来た次のリクエストで再取得を避ける）。
+// Redis未設定でも効くので、キャッシュの効き目を Redis の有無に依存させない
+function memGet(key) {
+  const hit = raceCache.get(key);
+  return hit && Date.now() < hit.exp ? hit.data : null;
+}
+function memSet(key, data, ttlMs) {
+  raceCache.set(key, { data, exp: Date.now() + ttlMs });
+}
+
+// 本日の開催場一覧（メモリ → Redis → 一覧ページ → 全場プローブ の順に試す）
 async function getOpenVenues(hd) {
+  const mkey = `openvenues:${hd}`;
+  const mem = memGet(mkey);
+  if (mem) return mem;
+
   try {
-    const cached = JSON.parse(await redisCmd('GET', `openvenues:${hd}`) || '[]');
-    if (Array.isArray(cached) && cached.length) return cached;
+    const cached = JSON.parse(await redisCmd('GET', mkey) || '[]');
+    if (Array.isArray(cached) && cached.length) { memSet(mkey, cached, 600000); return cached; }
   } catch {}
 
+  // 一覧ページは構造変更で取れなくなっているため短めに切り上げ、確実なプローブへ回す
   for (const url of TODAY_INDEX_URLS(hd)) {
-    const found = extractJcds(await fetchQuick(url, 6000));
+    const found = extractJcds(await fetchQuick(url, 3000));
     if (found.length) {
-      redisCmd('SET', `openvenues:${hd}`, JSON.stringify(found), 'EX', '600');
+      memSet(mkey, found, 600000);
+      await redisCmd('SET', mkey, JSON.stringify(found), 'EX', '600');
       return found;
     }
   }
 
-  const probed = await probeOpenVenues(hd, 15000);
-  // 当日の開催場は途中で増減しないので長めにキャッシュしてプローブの頻度を下げる
-  if (probed.length) redisCmd('SET', `openvenues:${hd}`, JSON.stringify(probed), 'EX', '3600');
+  const probed = await probeOpenVenues(hd, 12000);
+  // 当日の開催場は途中で増減しないので長めにキャッシュしてプローブの頻度を下げる。
+  // await しないと関数終了時に書き込みが破棄され、毎回プローブし直すことになる
+  if (probed.length) {
+    memSet(mkey, probed, 3600000);
+    await redisCmd('SET', mkey, JSON.stringify(probed), 'EX', '3600');
+  }
   return probed;
+}
+
+// 1場ぶんの締切時刻表（メモリ → Redis → 出走表の取得）
+async function getSchedule(jcd, hd) {
+  const mkey = `sched:${jcd}:${hd}`;
+  const mem = memGet(mkey);
+  if (mem) return mem;
+  try {
+    const cached = JSON.parse(await redisCmd('GET', mkey) || 'null');
+    if (cached && cached.length) { memSet(mkey, cached, 86400000); return cached; }
+  } catch {}
+  const html = await fetchQuick(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, 10000);
+  if (!html) return null;
+  const rl = parseRacelist(html, jcd, hd, '1');
+  if (!rl.schedule?.length) return null;
+  memSet(mkey, rl.schedule, 86400000);
+  await redisCmd('SET', mkey, JSON.stringify(rl.schedule), 'EX', '86400');
+  return rl.schedule;
 }
 
 app.get('/api/today', async (req, res) => {
@@ -647,22 +684,8 @@ app.get('/api/dashboard', async (req, res) => {
     const open = await getOpenVenues(hd);
 
     const venues = await Promise.all(open.map(async ({ jcd, name }) => {
-      // 締切時刻表は当日中は変わらないためRedisに1日キャッシュ
-      let schedule = null;
-      const raw = await redisCmd('GET', `sched:${jcd}:${hd}`);
-      if (raw) { try { schedule = JSON.parse(raw); } catch {} }
-      if (!schedule) {
-        try {
-          const html = await fetchHtml(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`);
-          if (html) {
-            const rl = parseRacelist(html, jcd, hd, '1');
-            if (rl.schedule?.length) {
-              schedule = rl.schedule;
-              redisCmd('SET', `sched:${jcd}:${hd}`, JSON.stringify(schedule), 'EX', '86400');
-            }
-          }
-        } catch {}
-      }
+      // 締切時刻表は当日中は変わらないためメモリ＋Redisに1日キャッシュ
+      const schedule = await getSchedule(jcd, hd);
       if (!schedule || !schedule.length) return { jcd, name, status: 'unknown' };
 
       // 次のレース = 締切+12分を過ぎていない最初のレース
@@ -1505,7 +1528,8 @@ app.all('/api/auto-post', async (req, res) => {
   if (!CRON_SECRET || secret !== CRON_SECRET) return res.status(401).json({ error: 'invalid cron secret' });
 
   // Vercel の30秒制限内で必ず応答を返すための全体締切
-  const tEnd = Date.now() + 26000;
+  const tEnd = Date.now() + 50000;
+  const timing = { redis: REDIS_ENABLED };
   const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
   const mode = req.query.mode === 'results' ? 'results' : 'races';
   const jst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
@@ -1545,27 +1569,19 @@ app.all('/api/auto-post', async (req, res) => {
     const cnt = parseInt(await redisCmd('GET', `xcount:${hd}`) || '0');
     if (cnt >= dailyCap) return res.json({ ok: true, skipped: `本日の投稿上限(${dailyCap}件)に到達` });
 
-    // 開催場（ダッシュボードと同じ検出ロジック・Redisキャッシュを共有）
+    // 開催場（ダッシュボードと同じ検出ロジック・キャッシュを共有）
+    const tOpen = Date.now();
     const open = await getOpenVenues(hd);
-    if (!open.length) return res.json({ ok: true, skipped: '本日の開催なし' });
+    timing.openVenues = Date.now() - tOpen;
+    if (!open.length) return res.json({ ok: true, skipped: '本日の開催なし', timing });
 
     // 締切時刻表は全場ぶんを並列で取得する。
     // 順番に取ると開催場が多い日（12場など）に Vercel の制限を大きく超えてしまう
-    const scheds = await Promise.all(open.map(async ({ jcd, name }) => {
-      let schedule = null;
-      try { schedule = JSON.parse(await redisCmd('GET', `sched:${jcd}:${hd}`) || 'null'); } catch {}
-      if (!schedule) {
-        const html = await fetchQuick(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, 10000);
-        if (html) {
-          const rl = parseRacelist(html, jcd, hd, '1');
-          if (rl.schedule?.length) {
-            schedule = rl.schedule;
-            redisCmd('SET', `sched:${jcd}:${hd}`, JSON.stringify(schedule), 'EX', '86400');
-          }
-        }
-      }
-      return { jcd, name, schedule };
-    }));
+    const tSched = Date.now();
+    const scheds = await Promise.all(open.map(async ({ jcd, name }) => (
+      { jcd, name, schedule: await getSchedule(jcd, hd) }
+    )));
+    timing.schedules = Date.now() - tSched;
 
     // 締切が近い順に候補を並べ、未投稿の先頭1件を対象にする
     const cands = [];
@@ -1578,27 +1594,31 @@ app.all('/api/auto-post', async (req, res) => {
       }
     }
     cands.sort((a, b) => a.lead - b.lead);
-    if (!cands.length) return res.json({ ok: true, skipped: `締切${minLead}〜${maxLead}分前のレースなし` });
+    if (!cands.length) return res.json({ ok: true, skipped: `締切${minLead}〜${maxLead}分前のレースなし`, timing });
 
+    const tDedup = Date.now();
     let target = null;
     for (const c of cands) {
       const done = await redisCmd('GET', `xposted:${hd}:${c.jcd}:${c.rno}`);
       if (!done) { target = c; break; }
     }
-    if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み' });
+    timing.dedup = Date.now() - tDedup;
+    if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', timing });
 
     // 残り時間が足りなければ投稿せず終了する（次回の実行で拾う）。
     // 締切時刻表は取得済みでキャッシュされるので、次回は高速に処理できる
     // データ取得に最大10秒＋AI生成に最低5秒は要るため、それを下回るなら見送る
     const remain = tEnd - Date.now();
     if (remain < 16000) {
-      return res.json({ ok: true, skipped: '準備に時間がかかったため次回の実行で投稿します', target, remainMs: remain });
+      return res.json({ ok: true, skipped: '準備に時間がかかったため次回の実行で投稿します', target, remainMs: remain, timing });
     }
-    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(14000, remain - 11000));
-    if (got.error) return res.json({ ok: false, target, error: got.error });
+    const tPred = Date.now();
+    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 11000));
+    timing.predict = Date.now() - tPred;
+    if (got.error) return res.json({ ok: false, target, error: got.error, timing });
 
     const text = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
-    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), predCached: got.cached });
+    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), predCached: got.cached, timing });
 
     const posted = await postToX(text);
     if (posted.ok) {
@@ -1610,7 +1630,7 @@ app.all('/api/auto-post', async (req, res) => {
       log.push({ jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: got.pred.matoi || [], ana: got.pred.ana || [] });
       await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
     }
-    res.json({ ok: posted.ok, target, text, posted });
+    res.json({ ok: posted.ok, target, text, posted, timing });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
