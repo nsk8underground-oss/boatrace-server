@@ -1384,9 +1384,14 @@ async function postToX(text) {
     let d = {};
     try { d = JSON.parse(raw); } catch {}
     if (!r.ok) {
-      // 401はアプリ権限がRead onlyのままか、権限変更後にアクセストークンを再発行していない場合に多い
+      // 401: アプリ権限がRead onlyのまま、または権限変更後にアクセストークンを再発行していない
+      // 402: X側の利用枠（クレジット）切れ。時間や課金プランの問題でコード側では解決できない
       const hint = r.status === 401
         ? 'Xアプリの権限をRead and writeにした上で、アクセストークンを再発行してVercelの環境変数を更新してください（/api/x-health で詳細確認）'
+        : r.status === 402
+        ? 'X APIの利用枠（クレジット）を使い切っています。X開発者ポータルで残量と契約プランを確認してください'
+        : r.status === 429
+        ? 'X APIのレート制限です。しばらく待つと解消します'
         : undefined;
       return { ok: false, status: r.status, error: d.detail || d.title || raw.slice(0, 300), hint };
     }
@@ -1660,6 +1665,13 @@ app.all('/api/auto-post', async (req, res) => {
     timing.dedup = Date.now() - tDedup;
     if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', timing });
 
+    // X側が投稿を受け付けない状態（クレジット切れ・権限エラー）が分かっているときは、
+    // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ
+    if (!dryRun) {
+      const hold = await redisCmd('GET', 'xhold');
+      if (hold) return res.json({ ok: true, skipped: `X投稿を一時停止中: ${hold}`, target, timing });
+    }
+
     // 残り時間が足りなければ投稿せず終了する（次回の実行で拾う）。
     // 締切時刻表は取得済みでキャッシュされるので、次回は高速に処理できる
     // データ取得に最大10秒＋AI生成に最低5秒は要るため、それを下回るなら見送る
@@ -1684,6 +1696,10 @@ app.all('/api/auto-post', async (req, res) => {
       try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
       log.push({ jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: got.pred.matoi || [], ana: got.pred.ana || [] });
       await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
+      await redisCmd('DEL', 'xhold');
+    } else if (posted.status === 402 || posted.status === 401 || posted.status === 403) {
+      // 設定や契約に起因する失敗は時間をおいても直らないため、1時間は生成を止める
+      await redisCmd('SET', 'xhold', `HTTP${posted.status} ${posted.error || ''}`.slice(0, 120), 'EX', '3600');
     }
     res.json({ ok: posted.ok, target, text, posted, timing });
   } catch (e) {
