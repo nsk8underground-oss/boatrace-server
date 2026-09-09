@@ -1598,26 +1598,30 @@ app.all('/api/auto-post', async (req, res) => {
 
   try {
     if (mode === 'results') {
+      // 定期実行の遅延・欠落に備えて複数回試行するため、1日1回だけ投稿するよう記録で防ぐ
+      if (!dryRun && await redisCmd('GET', `xresult:${hd}`)) {
+        return res.json({ ok: true, skipped: '本日の結果まとめは投稿済み' });
+      }
       let log = [];
       try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
       if (!log.length) return res.json({ ok: true, skipped: '本日の投稿なし' });
-      const rows = [];
-      for (const p of log.slice(0, 8)) {
-        try {
-          const html = await fetchHtml(`${BASE}/raceresult?jcd=${p.jcd}&hd=${hd}&rno=${p.rno}`);
-          if (!html) continue;
-          const r = parseRaceResult(html);
-          if (!r.order || r.order.length < 3) continue;
-          const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
-          const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
-          const hit = (p.matoi || []).includes(tri) ? 'matoi' : (p.ana || []).includes(tri) ? 'ana' : 'none';
-          rows.push({ venue: p.venue, rno: p.rno, result: tri, pay, hit });
-        } catch {}
-      }
+      // 結果は全場ぶんを並列取得する（順次だと Vercel の制限を超える）
+      const settled = await Promise.all(log.slice(0, 8).map(async p => {
+        const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${hd}&rno=${p.rno}`, 10000);
+        if (!html) return null;
+        const r = parseRaceResult(html);
+        if (!r.order || r.order.length < 3) return null;
+        const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
+        const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
+        const hit = (p.matoi || []).includes(tri) ? 'matoi' : (p.ana || []).includes(tri) ? 'ana' : 'none';
+        return { venue: p.venue, rno: p.rno, result: tri, pay, hit };
+      }));
+      const rows = settled.filter(Boolean);
       if (!rows.length) return res.json({ ok: true, skipped: '確定した結果なし' });
       const text = buildResultTweet(hd, rows);
       if (dryRun) return res.json({ ok: true, dryRun: true, text, xLen: xLen(text), rows });
       const posted = await postToX(text);
+      if (posted.ok) await redisCmd('SET', `xresult:${hd}`, '1', 'EX', '86400');
       return res.json({ ok: posted.ok, text, posted });
     }
 

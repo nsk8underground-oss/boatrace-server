@@ -2,11 +2,13 @@ name: X 自動投稿
 
 # GitHub Actions の無料枠で動く定期実行。cron は UTC 指定（JST = UTC+9）
 on:
+  # GitHubの定期実行は混雑時に数時間遅れたり、実行自体が飛ばされることが多い。
+  # 取りこぼしを減らすため多めに試行し、重複投稿はサーバー側の記録で防いでいる
   schedule:
-    # JST 10:00〜20:00 の毎時 — 締切が近いレースの予想を1件投稿
-    - cron: '0 1-11 * * *'
-    # JST 21:30 — 本日投稿した予想の結果まとめを投稿
-    - cron: '30 12 * * *'
+    # JST 10:00〜20:00 を30分間隔で試行 — 締切が近いレースの予想を1件投稿
+    - cron: '0,30 1-11 * * *'
+    # JST 21:30 / 22:30 / 23:30 に試行 — 本日の結果まとめ（投稿は1日1回のみ）
+    - cron: '30 12,13,14 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -49,8 +51,8 @@ jobs:
           DRY="false"
           [ -n "${IN_MODE:-}" ] && MODE="$IN_MODE"
           [ "${IN_DRY:-}" = "true" ] && DRY="true"
-          # 21:30 JST の枠は結果まとめ
-          [ "${SCHED:-}" = "30 12 * * *" ] && MODE="results"
+          # 夜の枠は結果まとめ
+          [ "${SCHED:-}" = "30 12,13,14 * * *" ] && MODE="results"
 
           URL="${APP_URL%/}/api/auto-post?mode=${MODE}"
           [ "$DRY" = "true" ] && URL="${URL}&dryRun=1"
