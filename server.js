@@ -499,21 +499,112 @@ async function fetchParsedOdds(paths, parser) {
 app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 app.get('/api/venues', (_, res) => res.json(Object.entries(VENUES).map(([jcd, name]) => ({ jcd, name }))));
 
-app.get('/api/today', async (req, res) => {
+function todayHd() {
   const jst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
-  const hd = `${jst.getFullYear()}${String(jst.getMonth()+1).padStart(2,'0')}${String(jst.getDate()).padStart(2,'0')}`;
+  return `${jst.getFullYear()}${String(jst.getMonth()+1).padStart(2,'0')}${String(jst.getDate()).padStart(2,'0')}`;
+}
+
+// HTML全体から jcd=NN を拾う。<a href> に限定するとページ構造の変更で検出できなくなるため、
+// 生のHTMLに対して正規表現をかける
+function extractJcds(html) {
+  const found = new Map();
+  for (const m of String(html || '').matchAll(/jcd=(\d{2})/g)) {
+    if (VENUES[m[1]] && !found.has(m[1])) found.set(m[1], VENUES[m[1]]);
+  }
+  return [...found.entries()].map(([jcd, name]) => ({ jcd, name }));
+}
+
+const TODAY_INDEX_URLS = hd => [
+  `${BASE}/index?hd=${hd}`,
+  `${BASE}/index`,
+  'https://www.boatrace.jp/owpc/pc/race/',
+];
+
+// リトライなしの軽量取得。開催場検出は複数URLを順に試すため、
+// fetchHtml（最大20秒×リトライ）だとVercelの30秒制限を超えてしまう
+async function fetchQuick(url, ms = 5000) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
   try {
-    const html = await fetchHtml('https://www.boatrace.jp/owpc/pc/race/');
-    const $ = cheerio.load(html || '');
-    const found = new Map();
-    $('a[href*="jcd="]').each((_, el) => {
-      const m = ($(el).attr('href') || '').match(/jcd=(\d{2})/);
-      if (m && VENUES[m[1]] && !found.has(m[1])) found.set(m[1], VENUES[m[1]]);
+    const r = await fetch(url, {
+      headers: { 'User-Agent': UA, 'Accept-Language': 'ja,en;q=0.9', 'Accept': 'text/html' },
+      signal: c.signal,
     });
-    res.json({ venues: [...found.entries()].map(([jcd,name])=>({jcd,name})), hd });
+    clearTimeout(t);
+    return r.ok ? await r.text() : null;
+  } catch { clearTimeout(t); return null; }
+}
+
+// 最終手段: 全場の出走表を並列で叩き、選手データがある場を開催中と判定する。
+// ページ構造に依存しないので確実だが負荷が高いため、一覧ページで取れないときだけ使う
+async function probeOpenVenues(hd) {
+  const results = await Promise.allSettled(Object.keys(VENUES).map(async jcd => {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 8000);
+    try {
+      const r = await fetch(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'ja,en;q=0.9', 'Accept': 'text/html' },
+        signal: c.signal,
+      });
+      clearTimeout(t);
+      if (!r.ok) return null;
+      const html = await r.text();
+      // 出走表の選手行（tbody.is-fs12）があれば開催中
+      return html.includes('is-fs12') ? jcd : null;
+    } catch { clearTimeout(t); return null; }
+  }));
+  return results
+    .filter(x => x.status === 'fulfilled' && x.value)
+    .map(x => ({ jcd: x.value, name: VENUES[x.value] }));
+}
+
+// 本日の開催場一覧（Redisキャッシュ → 一覧ページ → 全場プローブ の順に試す）
+async function getOpenVenues(hd) {
+  try {
+    const cached = JSON.parse(await redisCmd('GET', `openvenues:${hd}`) || '[]');
+    if (Array.isArray(cached) && cached.length) return cached;
+  } catch {}
+
+  for (const url of TODAY_INDEX_URLS(hd)) {
+    const found = extractJcds(await fetchQuick(url));
+    if (found.length) {
+      redisCmd('SET', `openvenues:${hd}`, JSON.stringify(found), 'EX', '600');
+      return found;
+    }
+  }
+
+  const probed = await probeOpenVenues(hd);
+  if (probed.length) redisCmd('SET', `openvenues:${hd}`, JSON.stringify(probed), 'EX', '3600');
+  return probed;
+}
+
+app.get('/api/today', async (req, res) => {
+  const hd = todayHd();
+  try {
+    res.json({ venues: await getOpenVenues(hd), hd });
   } catch (e) {
     res.json({ venues: [], hd, error: e.message });
   }
+});
+
+// 診断: 開催場の検出がどの段階で失敗しているかを確認する
+app.get('/api/debug-today', async (req, res) => {
+  const hd = req.query.hd || todayHd();
+  const steps = [];
+  for (const url of TODAY_INDEX_URLS(hd)) {
+    const html = await fetchQuick(url);
+    steps.push({
+      url,
+      fetched: html != null,
+      htmlLen: html ? html.length : 0,
+      title: html ? ((html.match(/<title>([^<]*)<\/title>/) || [])[1] || '').trim() : '',
+      jcdHits: html ? (html.match(/jcd=\d{2}/g) || []).length : 0,
+      venues: extractJcds(html).map(v => v.jcd),
+    });
+  }
+  let probe = null;
+  if (req.query.probe === '1') probe = (await probeOpenVenues(hd)).map(v => `${v.jcd}:${v.name}`);
+  res.json({ hd, steps, probe });
 });
 
 // 全場ダッシュボード: 本日の開催場ごとの「次のレース」締切時刻と共有予想の有無
@@ -526,21 +617,7 @@ app.get('/api/dashboard', async (req, res) => {
     const mem = raceCache.get(`dash:${hd}`);
     if (mem && Date.now() < mem.exp) return res.json(mem.data);
 
-    // 開催場一覧: Redis 10分キャッシュ → トップページのスクレイピング
-    let open = [];
-    const rawOpen = await redisCmd('GET', `openvenues:${hd}`);
-    if (rawOpen) { try { open = JSON.parse(rawOpen); } catch {} }
-    if (!open.length) {
-      const idxHtml = await fetchHtml('https://www.boatrace.jp/owpc/pc/race/').catch(() => null);
-      const $ = cheerio.load(idxHtml || '');
-      const found = new Map();
-      $('a[href*="jcd="]').each((_, el) => {
-        const m = ($(el).attr('href') || '').match(/jcd=(\d{2})/);
-        if (m && VENUES[m[1]] && !found.has(m[1])) found.set(m[1], VENUES[m[1]]);
-      });
-      open = [...found.entries()].map(([jcd, name]) => ({ jcd, name }));
-      if (open.length) redisCmd('SET', `openvenues:${hd}`, JSON.stringify(open), 'EX', '600');
-    }
+    const open = await getOpenVenues(hd);
 
     const venues = await Promise.all(open.map(async ({ jcd, name }) => {
       // 締切時刻表は当日中は変わらないためRedisに1日キャッシュ
@@ -1437,20 +1514,8 @@ app.all('/api/auto-post', async (req, res) => {
     const cnt = parseInt(await redisCmd('GET', `xcount:${hd}`) || '0');
     if (cnt >= dailyCap) return res.json({ ok: true, skipped: `本日の投稿上限(${dailyCap}件)に到達` });
 
-    // 開催場と締切時刻表（ダッシュボードと同じRedisキャッシュを再利用）
-    let open = [];
-    try { open = JSON.parse(await redisCmd('GET', `openvenues:${hd}`) || '[]'); } catch {}
-    if (!open.length) {
-      const idxHtml = await fetchHtml('https://www.boatrace.jp/owpc/pc/race/').catch(() => null);
-      const $ = cheerio.load(idxHtml || '');
-      const found = new Map();
-      $('a[href*="jcd="]').each((_, el) => {
-        const m = ($(el).attr('href') || '').match(/jcd=(\d{2})/);
-        if (m && VENUES[m[1]] && !found.has(m[1])) found.set(m[1], VENUES[m[1]]);
-      });
-      open = [...found.entries()].map(([jcd, name]) => ({ jcd, name }));
-      if (open.length) redisCmd('SET', `openvenues:${hd}`, JSON.stringify(open), 'EX', '600');
-    }
+    // 開催場（ダッシュボードと同じ検出ロジック・Redisキャッシュを共有）
+    const open = await getOpenVenues(hd);
     if (!open.length) return res.json({ ok: true, skipped: '本日の開催なし' });
 
     // 締切が近い順に候補を並べ、未投稿の先頭1件を対象にする
