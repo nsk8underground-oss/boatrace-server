@@ -38,6 +38,26 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 // AI予想モデル: 先頭から順に試し、無料枠上限・一時過負荷なら次へ（モデルごとに枠が独立）
 const PREDICT_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'];
 
+// Vercelのrewriteは転送先(/server.js)でリクエストパスを上書きすることがあり、
+// そうなるとExpressが全ルートを見失う（全APIが "Cannot GET /server.js" になる）。
+// vercel.json の destination に元パスを __path として埋めているので、ここで復元する。
+// パスが保持される環境では同じ値に戻すだけなので影響はない。
+app.use((req, res, next) => {
+  const qIdx = req.url.indexOf('?');
+  if (qIdx === -1) return next();
+  let params;
+  try { params = new URLSearchParams(req.url.slice(qIdx + 1)); } catch { return next(); }
+  const orig = params.get('__path');
+  // 置換が効かず "/$1" のような文字列が来た場合は無視して素通しする
+  if (!orig || !orig.startsWith('/') || orig.includes('$')) return next();
+  params.delete('__path');
+  const rest = params.toString();
+  req.url = orig + (rest ? '?' + rest : '');
+  // express.static は originalUrl を見てリダイレクト先を決めるため、こちらも揃える
+  req.originalUrl = req.url;
+  next();
+});
+
 // パスワード保護（全ページに適用）
 app.use(basicAuth({
   authorizer: (user, pass) =>
