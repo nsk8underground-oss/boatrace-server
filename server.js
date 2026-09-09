@@ -1320,11 +1320,12 @@ app.post('/api/predict', async (req, res) => {
 });
 
 /* ======================== X (Twitter) AUTO POST ======================== */
-const X_API_KEY       = process.env.X_API_KEY || '';
-const X_API_SECRET    = process.env.X_API_SECRET || '';
-const X_ACCESS_TOKEN  = process.env.X_ACCESS_TOKEN || '';
-const X_ACCESS_SECRET = process.env.X_ACCESS_SECRET || '';
-const CRON_SECRET     = process.env.CRON_SECRET || '';
+// 環境変数への貼り付け時に改行や空白が混入すると署名が壊れて401になるため trim する
+const X_API_KEY       = (process.env.X_API_KEY || '').trim();
+const X_API_SECRET    = (process.env.X_API_SECRET || '').trim();
+const X_ACCESS_TOKEN  = (process.env.X_ACCESS_TOKEN || '').trim();
+const X_ACCESS_SECRET = (process.env.X_ACCESS_SECRET || '').trim();
+const CRON_SECRET     = (process.env.CRON_SECRET || '').trim();
 const X_ENABLED = !!(X_API_KEY && X_API_SECRET && X_ACCESS_TOKEN && X_ACCESS_SECRET);
 
 // RFC3986 パーセントエンコード（OAuth署名は encodeURIComponent より厳格）
@@ -1379,13 +1380,67 @@ async function postToX(text) {
       signal: controller.signal,
     });
     clearTimeout(timer);
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) return { ok: false, status: r.status, error: d.detail || d.title || JSON.stringify(d).slice(0, 200) };
+    const raw = await r.text();
+    let d = {};
+    try { d = JSON.parse(raw); } catch {}
+    if (!r.ok) {
+      // 401はアプリ権限がRead onlyのままか、権限変更後にアクセストークンを再発行していない場合に多い
+      const hint = r.status === 401
+        ? 'Xアプリの権限をRead and writeにした上で、アクセストークンを再発行してVercelの環境変数を更新してください（/api/x-health で詳細確認）'
+        : undefined;
+      return { ok: false, status: r.status, error: d.detail || d.title || raw.slice(0, 300), hint };
+    }
     return { ok: true, id: d.data?.id };
   } catch (e) {
     return { ok: false, error: e.name === 'AbortError' ? 'X APIタイムアウト' : e.message };
   }
 }
+
+// 診断: X認証情報の状態と、読み取りAPIが通るかどうかを確認する。
+// 読み取りが通るのに投稿が401なら書き込み権限の問題、読み取りも401なら認証情報自体の問題
+app.get('/api/x-health', async (req, res) => {
+  const fp = v => v ? { set: true, len: v.length } : { set: false };
+  const env = {
+    X_API_KEY: fp(X_API_KEY),
+    X_API_SECRET: fp(X_API_SECRET),
+    X_ACCESS_TOKEN: fp(X_ACCESS_TOKEN),
+    X_ACCESS_SECRET: fp(X_ACCESS_SECRET),
+    CRON_SECRET: fp(CRON_SECRET),
+  };
+  // アクセストークンは「数字-英数字」の形式。ここが崩れていれば貼り付けミス
+  env.X_ACCESS_TOKEN.looksValid = /^\d+-[A-Za-z0-9]+$/.test(X_ACCESS_TOKEN);
+  if (!X_ENABLED) {
+    return res.json({ ok: false, cause: 'X認証情報が未設定', fix: 'Vercelの環境変数に4つすべて設定して再デプロイしてください', env });
+  }
+  const url = 'https://api.twitter.com/2/users/me';
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 12000);
+    const r = await fetch(url, { headers: { Authorization: oauth1Header('GET', url) }, signal: c.signal });
+    clearTimeout(t);
+    const raw = await r.text();
+    let d = {};
+    try { d = JSON.parse(raw); } catch {}
+    if (r.ok) {
+      return res.json({
+        ok: true,
+        message: '認証情報は有効です。投稿が401なら書き込み権限の問題です',
+        account: d.data ? `@${d.data.username}` : null,
+        fix: 'X開発者ポータルでApp permissionsをRead and writeにし、アクセストークンを再発行してVercelを更新',
+        env,
+      });
+    }
+    return res.json({
+      ok: false,
+      status: r.status,
+      cause: r.status === 401 ? '認証情報が無効（キーの取り違え・貼り付けミス・再発行が必要）' : 'X APIエラー',
+      xResponse: raw.slice(0, 300),
+      env,
+    });
+  } catch (e) {
+    res.json({ ok: false, cause: '接続エラー', detail: e.message, env });
+  }
+});
 
 // 自動投稿用の予想プロンプト（フロントと同じJSONスキーマ＝生成結果をアプリでもそのまま共有できる）
 function buildAutoPrompt(venue, rno, racers, weather, odds3t) {
