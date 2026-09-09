@@ -17,19 +17,33 @@ const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const REDIS_ENABLED = !!(UPSTASH_URL && UPSTASH_TOKEN);
 
 // Redis障害でAPI全体を落とさないため、失敗時は null を返す
-async function redisCmd(...args) {
-  if (!REDIS_ENABLED) return null;
+// Upstash REST を1回叩く。診断で使えるようステータスと本文もそのまま返す
+async function redisRaw(args, ms = 5000) {
+  if (!REDIS_ENABLED) return { ok: false, error: 'UPSTASH の環境変数が未設定' };
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
   try {
     const r = await fetch(UPSTASH_URL, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
+      signal: c.signal,
     });
-    const d = await r.json();
-    return d.result ?? null;
-  } catch {
-    return null;
+    clearTimeout(t);
+    const text = await r.text();
+    let d = null;
+    try { d = JSON.parse(text); } catch {}
+    return { ok: r.ok, status: r.status, result: d ? d.result : undefined, body: text.slice(0, 200) };
+  } catch (e) {
+    clearTimeout(t);
+    return { ok: false, error: e.name === 'AbortError' ? `timeout(${ms}ms)` : e.message };
   }
+}
+
+// 障害時もAPI全体を落とさないため null を返す（呼び出し側はキャッシュ無しとして動作する）
+async function redisCmd(...args) {
+  const r = await redisRaw(args);
+  return r.ok ? (r.result ?? null) : null;
 }
 
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
@@ -497,6 +511,34 @@ async function fetchParsedOdds(paths, parser) {
 }
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
+
+// 診断: Redis(Upstash)が実際に読み書きできているかを往復テストで確認する。
+// 環境変数が設定されていても、URL/トークンの不一致や上限超過で無言のまま失敗しうる
+app.get('/api/redis-health', async (req, res) => {
+  const host = (() => { try { return new URL(UPSTASH_URL || '').host; } catch { return null; } })();
+  if (!REDIS_ENABLED) {
+    return res.json({ ok: false, cause: 'UPSTASH_REDIS_REST_URL / TOKEN が未設定', urlHost: host });
+  }
+  const key = `healthcheck:${Date.now()}`;
+  const val = `v${Math.random().toString(36).slice(2)}`;
+  const setR = await redisRaw(['SET', key, val, 'EX', '60']);
+  const getR = await redisRaw(['GET', key]);
+  await redisRaw(['DEL', key]);
+  const roundTrip = getR.result === val;
+  res.json({
+    ok: roundTrip,
+    cause: roundTrip ? undefined
+      : !setR.ok ? `書き込み失敗 (HTTP ${setR.status || '-'})`
+      : !getR.ok ? `読み取り失敗 (HTTP ${getR.status || '-'})`
+      : '書き込んだ値が読み戻せない',
+    fix: roundTrip ? undefined
+      : 'Vercelの UPSTASH_REDIS_REST_URL と UPSTASH_REDIS_REST_TOKEN が同じデータベースのものか、Upstash側の利用上限に達していないか確認してください',
+    urlHost: host,
+    set: { ok: setR.ok, status: setR.status, error: setR.error, body: setR.body },
+    get: { ok: getR.ok, status: getR.status, error: getR.error, matched: roundTrip },
+    note: 'Redisが使えないと、投稿履歴・重複防止・キャッシュ共有が機能しません',
+  });
+});
 app.get('/api/venues', (_, res) => res.json(Object.entries(VENUES).map(([jcd, name]) => ({ jcd, name }))));
 
 function todayHd() {
