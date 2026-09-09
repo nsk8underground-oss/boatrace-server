@@ -22,7 +22,15 @@ function cleanEnv(v) {
     .trim();
 }
 
-const UPSTASH_URL   = cleanEnv(process.env.UPSTASH_REDIS_REST_URL);
+// Upstash REST は https のみ。スキーム欠落や http 指定、末尾スラッシュを補正する
+function normalizeUpstashUrl(v) {
+  let u = cleanEnv(v);
+  if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  return u.replace(/^http:\/\//i, 'https://').replace(/\/+$/, '');
+}
+
+const UPSTASH_URL   = normalizeUpstashUrl(process.env.UPSTASH_REDIS_REST_URL);
 const UPSTASH_TOKEN = cleanEnv(process.env.UPSTASH_REDIS_REST_TOKEN);
 
 const REDIS_ENABLED = !!(UPSTASH_URL && UPSTASH_TOKEN);
@@ -47,8 +55,21 @@ async function redisRaw(args, ms = 5000) {
     return { ok: r.ok, status: r.status, result: d ? d.result : undefined, body: text.slice(0, 200) };
   } catch (e) {
     clearTimeout(t);
-    return { ok: false, error: e.name === 'AbortError' ? `timeout(${ms}ms)` : e.message };
+    // fetch failed だけでは原因が分からないため、下位の理由（DNS/接続/TLS）も返す
+    const c = e.cause;
+    const detail = c ? String(c.code || c.message || c).slice(0, 140) : undefined;
+    return { ok: false, error: e.name === 'AbortError' ? `timeout(${ms}ms)` : e.message, detail };
   }
+}
+
+// 接続レベルの失敗コードを日本語の原因に対応づける
+function netCause(detail) {
+  const d = String(detail || '');
+  if (/ENOTFOUND|EAI_AGAIN/i.test(d)) return 'ホスト名が解決できません（データベースが削除済み、またはURLの綴り違い）';
+  if (/ECONNREFUSED/i.test(d))        return '接続を拒否されました（URLまたはポートが誤り）';
+  if (/CERT|TLS|SSL/i.test(d))        return 'TLS証明書のエラー';
+  if (/ETIMEDOUT|ECONNRESET/i.test(d))return '接続がタイムアウト/切断されました';
+  return null;
 }
 
 // 障害時もAPI全体を落とさないため null を返す（呼び出し側はキャッシュ無しとして動作する）
@@ -536,19 +557,24 @@ app.get('/api/redis-health', async (req, res) => {
   const getR = await redisRaw(['GET', key]);
   await redisRaw(['DEL', key]);
   const roundTrip = getR.result === val;
+  const net = netCause(setR.detail);
   res.json({
     ok: roundTrip,
     cause: roundTrip ? undefined
       : /ByteString/.test(setR.error || '') ? '環境変数の値に引用符など不正な文字が含まれています'
+      : net ? net
       : !setR.ok ? `書き込み失敗 (HTTP ${setR.status || '-'})`
       : !getR.ok ? `読み取り失敗 (HTTP ${getR.status || '-'})`
       : '書き込んだ値が読み戻せない',
     fix: roundTrip ? undefined
       : /ByteString/.test(setR.error || '') ? 'Vercelの環境変数から前後の引用符（" や “ ”）を削除して再デプロイしてください'
-      : 'Vercelの UPSTASH_REDIS_REST_URL と UPSTASH_REDIS_REST_TOKEN が同じデータベースのものか、Upstash側の利用上限に達していないか確認してください',
+      : net ? 'Upstashのコンソールでデータベースが存在するか確認し、REST API の URL と TOKEN を取り直してください'
+      : setR.status === 401 ? 'UPSTASH_REDIS_REST_TOKEN が URL と同じデータベースのものか確認してください'
+      : 'Upstash側の利用上限に達していないか確認してください',
     urlHost: host,
-    set: { ok: setR.ok, status: setR.status, error: setR.error, body: setR.body },
-    get: { ok: getR.ok, status: getR.status, error: getR.error, matched: roundTrip },
+    urlProtocol: (() => { try { return new URL(UPSTASH_URL).protocol; } catch { return null; } })(),
+    set: { ok: setR.ok, status: setR.status, error: setR.error, detail: setR.detail, body: setR.body },
+    get: { ok: getR.ok, status: getR.status, error: getR.error, detail: getR.detail, matched: roundTrip },
     note: 'Redisが使えないと、投稿履歴・重複防止・キャッシュ共有が機能しません',
   });
 });
