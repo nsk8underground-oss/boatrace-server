@@ -11,8 +11,19 @@ const PORT = process.env.PORT || 3000;
 const predictCache = new Map();
 const raceCache    = new Map();
 
-const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+// 環境変数の値は、貼り付け時に前後の空白・改行や引用符（"..." や “...” のような
+// 自動変換されたカーリークォート）が混入しやすい。そのままだとHTTPヘッダに載せられず
+// 「Cannot convert argument to a ByteString」で無言のまま全滅するため、ここで取り除く。
+// トークン類は引用符を含まない値なので、前後の引用符は常に不要とみなしてよい
+function cleanEnv(v) {
+  return String(v ?? '')
+    .trim()
+    .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
+    .trim();
+}
+
+const UPSTASH_URL   = cleanEnv(process.env.UPSTASH_REDIS_REST_URL);
+const UPSTASH_TOKEN = cleanEnv(process.env.UPSTASH_REDIS_REST_TOKEN);
 
 const REDIS_ENABLED = !!(UPSTASH_URL && UPSTASH_TOKEN);
 
@@ -48,7 +59,7 @@ async function redisCmd(...args) {
 
 // パスワード設定（環境変数 SITE_PASSWORD で変更可。デフォルト: boatrace2026）
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'boatrace2026';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_API_KEY = cleanEnv(process.env.GEMINI_API_KEY);
 // AI予想モデル: 先頭から順に試し、無料枠上限・一時過負荷なら次へ（モデルごとに枠が独立）
 const PREDICT_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'];
 
@@ -528,10 +539,12 @@ app.get('/api/redis-health', async (req, res) => {
   res.json({
     ok: roundTrip,
     cause: roundTrip ? undefined
+      : /ByteString/.test(setR.error || '') ? '環境変数の値に引用符など不正な文字が含まれています'
       : !setR.ok ? `書き込み失敗 (HTTP ${setR.status || '-'})`
       : !getR.ok ? `読み取り失敗 (HTTP ${getR.status || '-'})`
       : '書き込んだ値が読み戻せない',
     fix: roundTrip ? undefined
+      : /ByteString/.test(setR.error || '') ? 'Vercelの環境変数から前後の引用符（" や “ ”）を削除して再デプロイしてください'
       : 'Vercelの UPSTASH_REDIS_REST_URL と UPSTASH_REDIS_REST_TOKEN が同じデータベースのものか、Upstash側の利用上限に達していないか確認してください',
     urlHost: host,
     set: { ok: setR.ok, status: setR.status, error: setR.error, body: setR.body },
@@ -1363,11 +1376,11 @@ app.post('/api/predict', async (req, res) => {
 
 /* ======================== X (Twitter) AUTO POST ======================== */
 // 環境変数への貼り付け時に改行や空白が混入すると署名が壊れて401になるため trim する
-const X_API_KEY       = (process.env.X_API_KEY || '').trim();
-const X_API_SECRET    = (process.env.X_API_SECRET || '').trim();
-const X_ACCESS_TOKEN  = (process.env.X_ACCESS_TOKEN || '').trim();
-const X_ACCESS_SECRET = (process.env.X_ACCESS_SECRET || '').trim();
-const CRON_SECRET     = (process.env.CRON_SECRET || '').trim();
+const X_API_KEY       = cleanEnv(process.env.X_API_KEY);
+const X_API_SECRET    = cleanEnv(process.env.X_API_SECRET);
+const X_ACCESS_TOKEN  = cleanEnv(process.env.X_ACCESS_TOKEN);
+const X_ACCESS_SECRET = cleanEnv(process.env.X_ACCESS_SECRET);
+const CRON_SECRET     = cleanEnv(process.env.CRON_SECRET);
 const X_ENABLED = !!(X_API_KEY && X_API_SECRET && X_ACCESS_TOKEN && X_ACCESS_SECRET);
 
 // RFC3986 パーセントエンコード（OAuth署名は encodeURIComponent より厳格）
