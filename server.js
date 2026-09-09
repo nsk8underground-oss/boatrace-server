@@ -588,8 +588,8 @@ async function getOpenVenues(hd) {
   // 当日の開催場は途中で増減しないので長めにキャッシュしてプローブの頻度を下げる。
   // await しないと関数終了時に書き込みが破棄され、毎回プローブし直すことになる
   if (probed.length) {
-    memSet(mkey, probed, 3600000);
-    await redisCmd('SET', mkey, JSON.stringify(probed), 'EX', '3600');
+    memSet(mkey, probed, 10800000);
+    await redisCmd('SET', mkey, JSON.stringify(probed), 'EX', '10800');
   }
   return probed;
 }
@@ -603,7 +603,7 @@ async function getSchedule(jcd, hd) {
     const cached = JSON.parse(await redisCmd('GET', mkey) || 'null');
     if (cached && cached.length) { memSet(mkey, cached, 86400000); return cached; }
   } catch {}
-  const html = await fetchQuick(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, 10000);
+  const html = await fetchQuick(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, 15000);
   if (!html) return null;
   const rl = parseRacelist(html, jcd, hd, '1');
   if (!rl.schedule?.length) return null;
@@ -1494,13 +1494,14 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
 async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
   const venue = VENUES[jcd] || '';
   const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
-  // 4種を並列取得。fetchHtml（リトライ込み最大20秒）だと Vercel の制限を超えるため
-  // 単発10秒で揃える。オッズは取れなくても予想は生成できる
+  // 4種を並列取得（所要時間は最も遅い1本ぶん）。
+  // 開催ピーク時の boatrace.jp は10秒では返らないことがあるため、
+  // 予想に必須の出走表・直前情報は長めに、無くても成立するオッズは短めにする
   const [rlH, beforeH, o1H, o3H] = await Promise.all([
-    fetchQuick(`${BASE}/racelist?${q}`, 10000),
-    fetchQuick(`${BASE}/beforeinfo?${q}`, 10000),
-    fetchQuick(`${BASE}/oddstf?${q}`, 10000),
-    fetchQuick(`${BASE}/odds3t?${q}`, 10000),
+    fetchQuick(`${BASE}/racelist?${q}`, 18000),
+    fetchQuick(`${BASE}/beforeinfo?${q}`, 18000),
+    fetchQuick(`${BASE}/oddstf?${q}`, 8000),
+    fetchQuick(`${BASE}/odds3t?${q}`, 8000),
   ]);
   const rl = rlH ? parseRacelist(rlH, jcd, hd, rno) : null;
   if (!rl || !rl.racers.length) return { error: '出走データなし' };
@@ -1588,7 +1589,7 @@ app.all('/api/auto-post', async (req, res) => {
   if (!CRON_SECRET || secret !== CRON_SECRET) return res.status(401).json({ error: 'invalid cron secret' });
 
   // Vercel の30秒制限内で必ず応答を返すための全体締切
-  const tEnd = Date.now() + 50000;
+  const tEnd = Date.now() + 55000;
   const timing = { redis: REDIS_ENABLED };
   const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
   const mode = req.query.mode === 'results' ? 'results' : 'races';
@@ -1677,14 +1678,14 @@ app.all('/api/auto-post', async (req, res) => {
     }
 
     // 残り時間が足りなければ投稿せず終了する（次回の実行で拾う）。
-    // 締切時刻表は取得済みでキャッシュされるので、次回は高速に処理できる
-    // データ取得に最大10秒＋AI生成に最低5秒は要るため、それを下回るなら見送る
+    // この実行で開催場と締切時刻表はキャッシュされるので、次回は高速に処理できる。
+    // データ取得に最大18秒＋AI生成に最低9秒を見込み、それを下回るなら見送る
     const remain = tEnd - Date.now();
-    if (remain < 16000) {
+    if (remain < 28000) {
       return res.json({ ok: true, skipped: '準備に時間がかかったため次回の実行で投稿します', target, remainMs: remain, timing });
     }
     const tPred = Date.now();
-    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 11000));
+    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 19000));
     timing.predict = Date.now() - tPred;
     if (got.error) return res.json({ ok: false, target, error: got.error, timing });
 
