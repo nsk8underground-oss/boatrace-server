@@ -514,44 +514,39 @@ function extractJcds(html) {
   return [...found.entries()].map(([jcd, name]) => ({ jcd, name }));
 }
 
-const TODAY_INDEX_URLS = hd => [
-  `${BASE}/index?hd=${hd}`,
-  `${BASE}/index`,
-  'https://www.boatrace.jp/owpc/pc/race/',
-];
+const TODAY_INDEX_URLS = hd => [`${BASE}/index?hd=${hd}`];
 
-// リトライなしの軽量取得。開催場検出は複数URLを順に試すため、
-// fetchHtml（最大20秒×リトライ）だとVercelの30秒制限を超えてしまう
-async function fetchQuick(url, ms = 5000) {
+// 単発取得（リトライなし）。詳細な結果を返すので診断にも使う。
+// boatrace.jp は応答が遅いことがあるため、既定のタイムアウトは長めに取る
+async function fetchOnce(url, ms = 12000) {
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), ms);
+  const started = Date.now();
   try {
     const r = await fetch(url, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'ja,en;q=0.9', 'Accept': 'text/html' },
       signal: c.signal,
     });
     clearTimeout(t);
-    return r.ok ? await r.text() : null;
-  } catch { clearTimeout(t); return null; }
+    const body = r.ok ? await r.text() : '';
+    return { ok: r.ok, status: r.status, html: r.ok ? body : null, ms: Date.now() - started };
+  } catch (e) {
+    clearTimeout(t);
+    return { ok: false, status: 0, html: null, ms: Date.now() - started, error: e.name === 'AbortError' ? `timeout(${ms}ms)` : e.message };
+  }
 }
 
-// 最終手段: 全場の出走表を並列で叩き、選手データがある場を開催中と判定する。
-// ページ構造に依存しないので確実だが負荷が高いため、一覧ページで取れないときだけ使う
-async function probeOpenVenues(hd) {
+async function fetchQuick(url, ms = 12000) {
+  return (await fetchOnce(url, ms)).html;
+}
+
+// 全場の出走表を並列で叩き、選手データがある場を開催中と判定する。
+// ページ構造に依存しないため、一覧ページの作りが変わっても影響を受けない
+async function probeOpenVenues(hd, ms = 15000) {
   const results = await Promise.allSettled(Object.keys(VENUES).map(async jcd => {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 8000);
-    try {
-      const r = await fetch(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, {
-        headers: { 'User-Agent': UA, 'Accept-Language': 'ja,en;q=0.9', 'Accept': 'text/html' },
-        signal: c.signal,
-      });
-      clearTimeout(t);
-      if (!r.ok) return null;
-      const html = await r.text();
-      // 出走表の選手行（tbody.is-fs12）があれば開催中
-      return html.includes('is-fs12') ? jcd : null;
-    } catch { clearTimeout(t); return null; }
+    const r = await fetchOnce(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, ms);
+    // 出走表の選手行（tbody.is-fs12）があれば開催中
+    return r.html && r.html.includes('is-fs12') ? jcd : null;
   }));
   return results
     .filter(x => x.status === 'fulfilled' && x.value)
@@ -559,6 +554,7 @@ async function probeOpenVenues(hd) {
 }
 
 // 本日の開催場一覧（Redisキャッシュ → 一覧ページ → 全場プローブ の順に試す）
+// 合計の所要時間は Vercel の30秒制限に収まるよう 6秒 + 15秒 に抑えている
 async function getOpenVenues(hd) {
   try {
     const cached = JSON.parse(await redisCmd('GET', `openvenues:${hd}`) || '[]');
@@ -566,14 +562,15 @@ async function getOpenVenues(hd) {
   } catch {}
 
   for (const url of TODAY_INDEX_URLS(hd)) {
-    const found = extractJcds(await fetchQuick(url));
+    const found = extractJcds(await fetchQuick(url, 6000));
     if (found.length) {
       redisCmd('SET', `openvenues:${hd}`, JSON.stringify(found), 'EX', '600');
       return found;
     }
   }
 
-  const probed = await probeOpenVenues(hd);
+  const probed = await probeOpenVenues(hd, 15000);
+  // 当日の開催場は途中で増減しないので長めにキャッシュしてプローブの頻度を下げる
   if (probed.length) redisCmd('SET', `openvenues:${hd}`, JSON.stringify(probed), 'EX', '3600');
   return probed;
 }
@@ -588,6 +585,36 @@ app.get('/api/today', async (req, res) => {
 });
 
 // 診断: 開催場の検出がどの段階で失敗しているかを確認する
+// 診断: boatrace.jp の各URLに対する到達性を並列で確認する。
+// ステータス・所要時間・エラー内容まで返すので、404なのか遅延なのかを切り分けられる
+app.get('/api/debug-fetch', async (req, res) => {
+  const hd = req.query.hd || todayHd();
+  const ms = Math.min(parseInt(req.query.ms) || 15000, 20000);
+  const targets = {
+    'racelist(住之江)': `${BASE}/racelist?jcd=12&hd=${hd}&rno=1`,
+    'racelist(平和島)': `${BASE}/racelist?jcd=04&hd=${hd}&rno=1`,
+    'index?hd=':        `${BASE}/index?hd=${hd}`,
+    'index':            `${BASE}/index`,
+    'race/':            'https://www.boatrace.jp/owpc/pc/race/',
+    'top':              'https://www.boatrace.jp/',
+  };
+  const entries = Object.entries(targets);
+  const results = await Promise.all(entries.map(async ([name, url]) => {
+    const r = await fetchOnce(url, ms);
+    return [name, {
+      status: r.status,
+      ok: r.ok,
+      ms: r.ms,
+      error: r.error,
+      htmlLen: r.html ? r.html.length : 0,
+      hasRaceData: r.html ? r.html.includes('is-fs12') : false,
+      jcdHits: r.html ? (r.html.match(/jcd=\d{2}/g) || []).length : 0,
+      title: r.html ? ((r.html.match(/<title>([^<]*)<\/title>/) || [])[1] || '').trim().slice(0, 60) : '',
+    }];
+  }));
+  res.json({ hd, timeoutMs: ms, results: Object.fromEntries(results) });
+});
+
 app.get('/api/debug-today', async (req, res) => {
   const hd = req.query.hd || todayHd();
   const steps = [];
