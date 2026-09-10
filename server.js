@@ -109,12 +109,23 @@ app.use((req, res, next) => {
 });
 
 // パスワード保護（全ページに適用）
-app.use(basicAuth({
+const siteAuth = basicAuth({
   authorizer: (user, pass) =>
     basicAuth.safeCompare(user, 'guest') & basicAuth.safeCompare(pass, SITE_PASSWORD),
   challenge: true,
   realm: 'BoatRace Dashboard',
-}));
+});
+
+// 自動投稿だけは、正しい CRON_SECRET があれば Basic認証を免除する。
+// 外部のcronサービスはBasic認証を設定できないものが多いため。
+// このエンドポイント自体は CRON_SECRET（64文字）で保護されている
+app.use((req, res, next) => {
+  if (req.path === '/api/auto-post' && CRON_SECRET) {
+    const s = req.get('x-cron-secret') || (req.query && req.query.secret) || '';
+    if (s === CRON_SECRET) return next();
+  }
+  return siteAuth(req, res, next);
+});
 
 app.use(express.json());
 // index.html と sw.js はブラウザにキャッシュさせない（バージョン更新を確実に届けるため）
