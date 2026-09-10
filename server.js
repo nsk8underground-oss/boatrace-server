@@ -22,12 +22,16 @@ function cleanEnv(v) {
     .trim();
 }
 
-// Upstash REST は https のみ。スキーム欠落や http 指定、末尾スラッシュを補正する
+// Upstash REST は https のみ。スキーム欠落や http 指定、末尾スラッシュを補正する。
+// ただしローカル開発・テスト用のスタブ（localhost）は http のまま残す
 function normalizeUpstashUrl(v) {
   let u = cleanEnv(v);
   if (!u) return '';
   if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-  return u.replace(/^http:\/\//i, 'https://').replace(/\/+$/, '');
+  if (/^http:\/\//i.test(u) && !/^http:\/\/(localhost|127\.0\.0\.1)([:/]|$)/i.test(u)) {
+    u = u.replace(/^http:\/\//i, 'https://');
+  }
+  return u.replace(/\/+$/, '');
 }
 
 const UPSTASH_URL   = normalizeUpstashUrl(process.env.UPSTASH_REDIS_REST_URL);
@@ -1035,15 +1039,25 @@ app.get('/api/all', async (req, res) => {
 
   try {
     const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
-    const [rlRes, oddsRes, beforeRes] = await Promise.allSettled([
-      fetchHtml(`${BASE}/racelist?${q}`),
-      fetchParsedOdds([`oddstf?${q}`, `odds1t?${q}`], parseOdds1t),
-      fetchHtml(`${BASE}/beforeinfo?${q}`),
+    // すべて並列・単発取得にして所要時間を最長1本ぶん(18秒)に抑える。
+    // fetchParsedOdds は複数URLを順に試すため最大40秒かかり、
+    // フロント側の35秒タイムアウトに間に合わないことがあった。
+    // 単勝オッズのURLは2種あるので、順に試さず両方を並列で投げて取れた方を使う
+    const [rlH, o1H, o1Halt, beforeH] = await Promise.all([
+      fetchQuick(`${BASE}/racelist?${q}`, 18000),
+      fetchQuick(`${BASE}/oddstf?${q}`, 8000),
+      fetchQuick(`${BASE}/odds1t?${q}`, 8000),
+      fetchQuick(`${BASE}/beforeinfo?${q}`, 18000),
     ]);
-    const rl = rlRes.status === 'fulfilled' && rlRes.value ? parseRacelist(rlRes.value, jcd, hd, rno) : null;
+    const rl = rlH ? parseRacelist(rlH, jcd, hd, rno) : null;
     if (!rl || rl.racers.length === 0) return res.status(404).json({ error: '出走データがありません。開催日・場コードを確認してください。平和島=04 / 芦屋=21' });
-    const odds   = oddsRes.status === 'fulfilled' ? oddsRes.value : { odds: {} };
-    const before = beforeRes.status === 'fulfilled' && beforeRes.value ? parseBeforeinfo(beforeRes.value) : { weather: {}, exhibit: {} };
+    let odds = { odds: {} };
+    for (const h of [o1H, o1Halt]) {
+      if (!h) continue;
+      const p = parseOdds1t(h);
+      if (Object.keys(p.odds).length) { odds = p; break; }
+    }
+    const before = beforeH ? parseBeforeinfo(beforeH) : { weather: {}, exhibit: {} };
     rl.racers = rl.racers.map(r => ({ ...r,
       odds: odds.odds[r.lane] || null,
       exhibitTime: before.exhibit[r.lane]?.exhibitTime || null,
@@ -1680,16 +1694,31 @@ app.all('/api/auto-post', async (req, res) => {
 
   try {
     if (mode === 'results') {
-      // 定期実行の遅延・欠落に備えて複数回試行するため、1日1回だけ投稿するよう記録で防ぐ
-      if (!dryRun && await redisCmd('GET', `xresult:${hd}`)) {
-        return res.json({ ok: true, skipped: '本日の結果まとめは投稿済み' });
+      // 対象日を決める。定期実行は数時間遅れることがあり、23:30の枠が日付をまたいで
+      // 起動すると当日ぶんを取り逃すため、当日に投稿がなければ前日ぶんを見る
+      const prev = (() => {
+        const d = new Date(`${hd.slice(0, 4)}-${hd.slice(4, 6)}-${hd.slice(6, 8)}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() - 1);
+        return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+      })();
+      const readLog = async d => {
+        try { return JSON.parse(await redisCmd('GET', `xlog:${d}`) || '[]'); } catch { return []; }
+      };
+      let day  = hd;
+      let log  = await readLog(hd);
+      let done = !!(await redisCmd('GET', `xresult:${hd}`));
+      // 当日に投稿が無い、または当日ぶんが投稿済みなら、未投稿の前日ぶんを対象にする
+      if (!log.length || done) {
+        const prevLog  = await readLog(prev);
+        const prevDone = !!(await redisCmd('GET', `xresult:${prev}`));
+        if (prevLog.length && !prevDone) { day = prev; log = prevLog; done = false; }
       }
-      let log = [];
-      try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
-      if (!log.length) return res.json({ ok: true, skipped: '本日の投稿なし' });
+      // 定期実行の遅延・欠落に備えて複数回試行するため、1日1回だけ投稿するよう記録で防ぐ
+      if (!dryRun && done) return res.json({ ok: true, skipped: `${day} の結果まとめは投稿済み` });
+      if (!log.length) return res.json({ ok: true, skipped: '対象となる投稿がありません', checkedDays: [hd, prev] });
       // 結果は全場ぶんを並列取得する（順次だと Vercel の制限を超える）
       const settled = await Promise.all(log.slice(0, 8).map(async p => {
-        const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${hd}&rno=${p.rno}`, 10000);
+        const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${day}&rno=${p.rno}`, 10000);
         if (!html) return null;
         const r = parseRaceResult(html);
         if (!r.order || r.order.length < 3) return null;
@@ -1700,11 +1729,12 @@ app.all('/api/auto-post', async (req, res) => {
       }));
       const rows = settled.filter(Boolean);
       if (!rows.length) return res.json({ ok: true, skipped: '確定した結果なし' });
-      const text = buildResultTweet(hd, rows);
-      if (dryRun) return res.json({ ok: true, dryRun: true, text, xLen: xLen(text), rows });
+      const text = buildResultTweet(day, rows);
+      if (dryRun) return res.json({ ok: true, dryRun: true, day, text, xLen: xLen(text), rows });
       const posted = await postToX(text);
-      if (posted.ok) await redisCmd('SET', `xresult:${hd}`, '1', 'EX', '86400');
-      return res.json({ ok: posted.ok, text, posted });
+      // 前日ぶんを投稿した場合もその日の記録として残す（二重投稿を防ぐ）
+      if (posted.ok) await redisCmd('SET', `xresult:${day}`, '1', 'EX', '172800');
+      return res.json({ ok: posted.ok, day, text, posted });
     }
 
     // mode=races: 締切15〜90分前のレースを1件だけ投稿（Vercelの30秒制限に収めるため）
