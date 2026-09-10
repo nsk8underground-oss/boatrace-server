@@ -1793,10 +1793,22 @@ app.all('/api/auto-post', async (req, res) => {
     if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', timing });
 
     // X側が投稿を受け付けない状態（クレジット切れ・権限エラー）が分かっているときは、
-    // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ
+    // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ。
+    // 設定を直したあとは resume=1 を付けて即座に再開できる
     if (!dryRun) {
-      const hold = await redisCmd('GET', 'xhold');
-      if (hold) return res.json({ ok: true, skipped: `X投稿を一時停止中: ${hold}`, target, timing });
+      if (req.query.resume === '1') {
+        await redisCmd('DEL', 'xhold');
+      } else {
+        const hold = await redisCmd('GET', 'xhold');
+        if (hold) {
+          return res.json({
+            ok: true,
+            skipped: `X投稿を一時停止中: ${hold}`,
+            hint: '設定を修正済みなら URL に &resume=1 を付けて実行すると即座に再開します',
+            target, timing,
+          });
+        }
+      }
     }
 
     // 残り時間が足りなければ投稿せず終了する（次回の実行で拾う）。
