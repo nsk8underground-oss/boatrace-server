@@ -1753,6 +1753,12 @@ app.all('/api/auto-post', async (req, res) => {
     const maxLead = parseInt(req.query.maxLead) || 90;
     const dailyCap = parseInt(req.query.cap) || 8;
 
+    // 設定を直したあとの再開は最初に処理する。
+    // 対象レースが見つかったときだけ解除する作りだと、レースが無い時間帯に
+    // 実行しても解除されず、いつまでも停止したままになる
+    const resumed = req.query.resume === '1' && !dryRun;
+    if (resumed) await redisCmd('DEL', 'xhold');
+
     const cnt = parseInt(await redisCmd('GET', `xcount:${hd}`) || '0');
     if (cnt >= dailyCap) return res.json({ ok: true, skipped: `本日の投稿上限(${dailyCap}件)に到達` });
 
@@ -1792,22 +1798,17 @@ app.all('/api/auto-post', async (req, res) => {
     timing.dedup = Date.now() - tDedup;
     if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', timing });
 
-    // X側が投稿を受け付けない状態（クレジット切れ・権限エラー）が分かっているときは、
-    // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ。
-    // 設定を直したあとは resume=1 を付けて即座に再開できる
-    if (!dryRun) {
-      if (req.query.resume === '1') {
-        await redisCmd('DEL', 'xhold');
-      } else {
-        const hold = await redisCmd('GET', 'xhold');
-        if (hold) {
-          return res.json({
-            ok: true,
-            skipped: `X投稿を一時停止中: ${hold}`,
-            hint: '設定を修正済みなら URL に &resume=1 を付けて実行すると即座に再開します',
-            target, timing,
-          });
-        }
+    // X側が投稿を受け付けない状態（認証エラー・クレジット切れ）が分かっているときは、
+    // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ
+    if (!dryRun && !resumed) {
+      const hold = await redisCmd('GET', 'xhold');
+      if (hold) {
+        return res.json({
+          ok: true,
+          skipped: `X投稿を一時停止中: ${hold}`,
+          hint: '設定を修正済みなら URL に &resume=1 を付けて実行すると即座に再開します',
+          target, timing,
+        });
       }
     }
 
@@ -1827,20 +1828,28 @@ app.all('/api/auto-post', async (req, res) => {
     if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), predCached: got.cached, timing });
 
     const posted = await postToX(text);
-    if (posted.ok) {
+    // 同一内容の重複投稿をXは403で拒否する。これは「既に投稿済み」であって
+    // 設定不備ではないので、成功と同じ扱いにして次のレースへ進める。
+    // ここを止めてしまうと、無関係な重複ひとつで1時間BOTが停止してしまう
+    const duplicate = !posted.ok && posted.status === 403 && /duplicate/i.test(posted.error || '');
+
+    if (posted.ok || duplicate) {
       await redisCmd('SET', `xposted:${hd}:${target.jcd}:${target.rno}`, '1', 'EX', '86400');
       await redisCmd('INCR', `xcount:${hd}`);
       await redisCmd('EXPIRE', `xcount:${hd}`, '86400');
       let log = [];
       try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
-      log.push({ jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: got.pred.matoi || [], ana: got.pred.ana || [] });
-      await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
+      // 同じレースが履歴に二重登録されないようにする
+      if (!log.some(p => p.jcd === target.jcd && p.rno === target.rno)) {
+        log.push({ jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: got.pred.matoi || [], ana: got.pred.ana || [] });
+        await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
+      }
       await redisCmd('DEL', 'xhold');
     } else if (posted.status === 402 || posted.status === 401 || posted.status === 403) {
-      // 設定や契約に起因する失敗は時間をおいても直らないため、1時間は生成を止める
+      // 認証や契約に起因する失敗は時間をおいても直らないため、1時間は生成を止める
       await redisCmd('SET', 'xhold', `HTTP${posted.status} ${posted.error || ''}`.slice(0, 120), 'EX', '3600');
     }
-    res.json({ ok: posted.ok, target, text, posted, timing });
+    res.json({ ok: posted.ok || duplicate, duplicate: duplicate || undefined, target, text, posted, timing });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
