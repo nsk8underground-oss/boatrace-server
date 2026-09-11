@@ -1307,7 +1307,7 @@ async function callGemini(prompt, budgetMs = 26000) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
       const generationConfig = {
         temperature: 0.7,
-        maxOutputTokens: 4096, // 8点×2+シナリオ2本。少なすぎるとJSONが途中で切れて全滅する
+        maxOutputTokens: 4096, // 候補20点前後+シナリオ2本。少なすぎるとJSONが途中で切れて全滅する
         responseMimeType: 'application/json',
       };
       // thinkingConfig は 2.5系のみ対応（2.0系に送ると400エラー）
@@ -1408,7 +1408,7 @@ function storePredict(cacheKey, result) {
 
 // AI予想エンドポイント（Gemini）
 app.post('/api/predict', async (req, res) => {
-  const { prompt, cacheKey, by } = req.body;
+  const { prompt, cacheKey, by, odds3t } = req.body;
   if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
   if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
 
@@ -1418,9 +1418,23 @@ app.post('/api/predict', async (req, res) => {
     if (hit) return res.json({ ...hit, cached: true });
   }
 
+  // 3連単オッズを受け取れたら、買い目の選定はここで期待値から行う。
+  // BOTと同じ関数を通すので、共有キャッシュ越しに両方が同じ買い目を見る
+  let odds = null;
+  if (odds3t && typeof odds3t === 'object' && !Array.isArray(odds3t)) {
+    const ent = Object.entries(odds3t).slice(0, 120);
+    odds = {};
+    for (const [k, v] of ent) {
+      const c = normTrifecta(k), o = Number(v);
+      if (c && isFinite(o) && o > 0) odds[c] = o;
+    }
+  }
+
   const r = await callGemini(prompt);
   if (!r.ok) return res.status(r.status).json(r.body);
-  const result = { content: [{ text: r.jsonText }], model: r.model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
+  let text = r.jsonText;
+  try { text = JSON.stringify(applyEV(JSON.parse(r.jsonText), odds)); } catch {}
+  const result = { content: [{ text }], model: r.model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
   storePredict(cacheKey, result);
   res.json(result);
 });
@@ -1554,16 +1568,50 @@ app.get('/api/x-health', async (req, res) => {
 });
 
 // 自動投稿用の予想プロンプト（フロントと同じJSONスキーマ＝生成結果をアプリでもそのまま共有できる）
-function buildAutoPrompt(venue, rno, racers, weather, odds3t) {
+// ===== 期待値ベースの買い目選定 =====
+// 「オッズが安い＝人気＝当たりやすい」で選ぶと、控除率25%のぶんだけ必ず負ける。
+// AIには人気を見せずに各組の的中確率だけを見積もらせ、実際のオッズと突き合わせて
+// 期待値（確率×オッズ）が1.0を超える買い目だけを採用する。
+const EV_MIN_MAIN  = 1.05;   // 本線に採用する最低期待値
+const EV_MIN_ANA   = 1.20;   // 穴は当たりが薄くブレるので高めに要求する
+const ANA_MIN_ODDS = 30;     // これ以上を穴として扱う
+const MAX_POINTS   = 8;      // 1セクションの最大点数
+const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
+
+// 両プロンプト（BOT側・アプリ側）で同じ出力形式にする。
+// 共有キャッシュを双方で使い回すため、形式がずれると片方が壊れる
+const EV_PROMPT_RULES = `【重要・予想の方針】
+オッズ（市場の人気）はこのプロンプトでは渡しません。人気は他人の予想であって的中確率の根拠ではなく、
+人気順に買うと控除率25%のぶんだけ回収率が必ず100%を下回ります。
+あなたの仕事は「当てにいく買い目を選ぶこと」ではなく、選手・モーター・展示・コース・気象から
+各組の的中確率を正直に見積もることです。サーバー側でその確率と実際のオッズを突き合わせ、
+期待値（確率×オッズ）が1.0を超える組だけを買い目として採用します。
+的中確率を高く見せようとして人気サイドに寄せる必要はありません。薄いと思う組は薄いままにしてください。
+
+以下のJSON形式のみで回答（バッククォート不要）:
+{
+  "analysis": "280文字以内の総合分析",
+  "tenkai_main": "最有力の展開シナリオ130文字以内。どの艇がどう決まるのが本線か具体的に",
+  "tenkai_ana": "波乱の展開シナリオ130文字以内。何が起きれば高配当になるか具体的に",
+  "wind_effect": "90文字以内",
+  "tide_effect": "90文字以内",
+  "motor_comment": "80文字以内",
+  "focus": "注目艇番号（数字のみ）",
+  "focus_reason": "80文字以内",
+  "cands": [{"c":"1-2-3","p":18},{"c":"1-3-2","p":9}]
+}
+candsは3連単の候補を18〜24組。cは "艇番-艇番-艇番" 形式、pは的中確率(%)の見積もり（小数可）。
+3連単の各組は同時に起こらないので、pの合計は100を超えないこと。
+p が 1 未満になるほど薄い組は入れないこと。同じ組を重複させないこと。
+堅い組だけを並べず、条件から見て起こりうる波乱の組も確率相応の p で入れること。`;
+
+function buildAutoPrompt(venue, rno, racers, weather) {
   const lines = racers.map(r =>
     `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
     `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
-    `単勝:${r.odds != null ? r.odds.toFixed(1) + '倍' : '不明'} モーター:${r.motorGrade || '未評価'}(2連${r.motor2Rate || 0}%) ` +
+    `モーター:${r.motorGrade || '未評価'}(2連${r.motor2Rate || 0}%) ` +
     `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
   ).join('\n');
-  const top = Object.entries(odds3t || {}).sort((a, b) => a[1] - b[1]).slice(0, 10)
-    .map(([k, v], i) => `${i + 1}番人気:${k}(${v}倍)`).join(' ');
-  const oddsLine = top ? `\n【3連単オッズ上位10＝市場の人気】\n${top}\n` : '';
 
   return `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
@@ -1572,28 +1620,91 @@ function buildAutoPrompt(venue, rno, racers, weather, odds3t) {
 
 【出走表（boatrace.jp 実データ）】
 ${lines}
-${oddsLine}
-以下のJSON形式のみで回答（バッククォート不要）:
-{
-  "analysis": "280文字以内の総合分析",
-  "tenkai_main": "本線展開シナリオ130文字以内。どの艇がどう決まればmatoi8点が的中するか具体的に",
-  "tenkai_ana": "穴展開シナリオ130文字以内。どんな波乱が起きればana8点が飛び出すか具体的に",
-  "main_conf": 本線が的中する信頼度を0〜100の数字で,
-  "ana_conf": 穴展開が起きる可能性を0〜100の数字で,
-  "wind_effect": "90文字以内",
-  "tide_effect": "90文字以内",
-  "motor_comment": "80文字以内",
-  "focus": "注目艇番号（数字のみ）",
-  "focus_reason": "80文字以内",
-  "matoi": ["本線①","本線②","本線③","本線④","本線⑤","本線⑥","本線⑦","本線⑧"],
-  "ana":   ["穴①","穴②","穴③","穴④","穴⑤","穴⑥","穴⑦","穴⑧"]
+
+${EV_PROMPT_RULES}`;
 }
-matoiは三連単の的中重視フォーメーション8点（本命軸から相手を広げた買い目構成）、
-anaは高配当を狙う穴フォーメーション8点（本線と重複しない並び。オッズ50倍以上を意識）。
-オッズ情報がある場合: 市場の人気と実力データに乖離がある並びは「過小評価された妙味」として
-積極的に評価し、特にana8点に活かすこと。
-全て "艇番-艇番-艇番" 形式（例: "1-2-3"）で記載。matoi内・ana内で重複なし。
-main_confとana_confの合計が100になる必要はない（それぞれ独立した確度）。`;
+
+// AIの確率見積もりと実オッズから買い目を決める。
+// pred を書き換えて返す（matoi / ana / main_conf / ana_conf / ev_* を設定）
+function applyEV(pred, odds3t) {
+  const odds = odds3t && typeof odds3t === 'object' && Object.keys(odds3t).length ? odds3t : null;
+
+  // 候補の正規化。表記ゆれ・重複・壊れた確率を落とす
+  const rows = [];
+  for (const c of Array.isArray(pred.cands) ? pred.cands : []) {
+    const combo = normTrifecta(c && (c.c ?? c.combo));
+    const p = Number(c && (c.p ?? c.prob));
+    if (!combo || !isFinite(p) || p <= 0) continue;
+    if (rows.some(r => r.combo === combo)) continue;
+    rows.push({ combo, p });
+  }
+
+  // 候補が無い（旧形式のキャッシュや生成失敗）ときは従来の matoi / ana をそのまま使う
+  if (!rows.length) {
+    pred.ev_mode = 'none';
+    return pred;
+  }
+
+  // 3連単の各組は排反なので確率の合計は100%を超えない。
+  // 超えていたらAIが確率を盛っているので、比率を保って縮める（期待値の水増しを防ぐ）
+  const sum = rows.reduce((s, r) => s + r.p, 0);
+  const k = sum > 100 ? 100 / sum : 1;
+  for (const r of rows) {
+    r.p = r.p * k;
+    r.odds = odds ? (odds[r.combo] ?? null) : null;
+    r.ev = r.odds ? r.p / 100 * r.odds : null;
+  }
+  pred.ev_scaled = k < 1 ? Math.round(sum) : undefined;
+
+  const byP  = (a, b) => b.p - a.p;
+  const byEV = (a, b) => b.ev - a.ev;
+  // 合計が100%を大きく超える出力は確率の見積もり自体が信用できない。
+  // 縮めれば数字は整うが、それで出した期待値を根拠にするのは誠実ではないので、
+  // 期待値は名乗らず確率順に並べるだけにする
+  const unreliable = sum > EV_SUM_LIMIT;
+  const usable = unreliable ? [] : rows.filter(r => r.ev != null);
+
+  let main, ana;
+  if (usable.length) {
+    // 期待値が基準を超えた買い目だけを採用する。
+    // そのうち当たりやすい順に本線、残りの高配当 side を穴として足す
+    const qual = usable.filter(r => r.ev >= EV_MIN_MAIN);
+    main = qual.slice().sort(byP).slice(0, MAX_POINTS);
+    const inMain = new Set(main.map(r => r.combo));
+    ana = qual.filter(r => !inMain.has(r.combo) && r.odds >= ANA_MIN_ODDS && r.ev >= EV_MIN_ANA)
+              .sort(byEV).slice(0, MAX_POINTS);
+    pred.ev_mode = 'ev';
+  } else {
+    // オッズが取れなかった / 確率が信用できないときは期待値を出せない。
+    // 確率順に並べるだけにとどめ、期待値は表示しない
+    const sorted = rows.slice().sort(byP);
+    main = sorted.slice(0, MAX_POINTS);
+    ana  = sorted.slice(MAX_POINTS, MAX_POINTS * 2);
+    pred.ev_mode = unreliable ? 'unreliable' : 'noodds';
+  }
+
+  // 期待値（1点100円あたりの期待回収）と的中確率を、選んだ買い目から実際に計算する
+  const stats = list => {
+    if (!list.length) return { conf: 0, ev: null };
+    const conf = Math.round(list.reduce((s, r) => s + r.p, 0));
+    const haveOdds = list.every(r => r.ev != null);
+    return { conf, ev: haveOdds ? +(list.reduce((s, r) => s + r.ev, 0) / list.length).toFixed(2) : null };
+  };
+  const sm = stats(main), sa = stats(ana);
+
+  pred.matoi = main.map(r => r.combo);
+  pred.ana   = ana.map(r => r.combo);
+  pred.main_conf = sm.conf;
+  pred.ana_conf  = sa.conf;
+  pred.ev_main = pred.ev_mode === 'ev' ? sm.ev : null;
+  pred.ev_ana  = pred.ev_mode === 'ev' ? sa.ev : null;
+  // 期待値1.0超えが1点も無いレースは「見送り」を出す。
+  // 無理に買い目を出すことが回収率を下げるいちばんの原因なので、ここは正直に返す
+  pred.ev_skip = pred.ev_mode === 'ev' && !main.length && !ana.length;
+  pred.ev_detail = rows.filter(r => r.ev != null)
+    .sort(byEV).slice(0, 24)
+    .map(r => ({ c: r.combo, p: +r.p.toFixed(1), o: r.odds, ev: +r.ev.toFixed(2) }));
+  return pred;
 }
 
 // 1レース分のデータを集めて予想を取得（共有キャッシュ優先・なければ生成して共有キャッシュに保存）
@@ -1616,7 +1727,8 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
   const odds3t = o3H ? (parseOdds3t(o3H).odds || {}) : {};
 
   const hasEx = Object.keys(before.exhibit).length > 0;
-  const cacheKey = `v4_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
+  // v5: 期待値ベースの選定に切り替えたため、v4 の古い形式は使い回さない
+  const cacheKey = `v5_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
   const cached = await lookupSharedPredict(cacheKey);
   if (cached) {
     try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, schedule: rl.schedule }; } catch {}
@@ -1637,13 +1749,17 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
     motorGrade: motors[r.motorNo]?.grade || '',
   }));
 
-  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {}, odds3t);
+  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {});
   const g = await callGemini(prompt, budgetMs);
   if (!g.ok) return { error: g.body?.error || '予想生成失敗' };
-  const result = { content: [{ text: g.jsonText }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
-  storePredict(cacheKey, result);
-  try { return { pred: JSON.parse(g.jsonText), venue, cached: false, schedule: rl.schedule }; }
+  // 買い目はAIに選ばせず、AIの確率見積もりと実オッズの期待値で決める。
+  // 確定後のJSONをキャッシュに入れるので、アプリ側も同じ買い目を見ることになる
+  let pred;
+  try { pred = applyEV(JSON.parse(g.jsonText), odds3t); }
   catch { return { error: '予想の解析に失敗' }; }
+  const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
+  storePredict(cacheKey, result);
+  return { pred, venue, cached: false, schedule: rl.schedule };
 }
 
 // 3連単の買い目表記を正規化する（全角や矢印など表記ゆれを 1-2-3 形式に揃える）。
@@ -1752,13 +1868,20 @@ function buildRaceTweet(venue, rno, closeTime, pred) {
   const mc = parseInt(pred.main_conf) || 0;
   const ac = parseInt(pred.ana_conf) || 0;
   const tail = `\n#競艇 #ボートレース #${venue}`;
-  // 買い目が無いほうの見出しは出さない（「★穴 信頼度0%」だけが残るのを防ぐ）
-  const block = (mark, conf, combos) =>
-    combos.length ? `${mark} 信頼度${conf}%\n${compressTrifecta(combos).join('　')}` : '';
+  // 期待値（1点100円あたりの期待回収）を見出しに出す。
+  // 「人気だから買う」ではなく「期待値が1.0を超えたから買う」ことを読み手に示すため
+  const evTag = ev => (ev ? ` 期待値${ev.toFixed(2)}` : '');
+  // 買い目が無いほうの見出しは出さない（「★穴 的中率0%」だけが残るのを防ぐ）
+  const block = (mark, conf, ev, combos) =>
+    combos.length ? `${mark} 的中率${conf}%${evTag(ev)}\n${compressTrifecta(combos).join('　')}` : '';
+  // 期待値1.0超えが1点も無いレースは買い目を出さない。
+  // 無理に買うことが回収率を下げるいちばんの原因なので、見送りをそのまま伝える
+  const skip = pred.ev_skip && !allM.length && !allA.length;
   const render = (nm, na) => [
     `🚤${venue} ${rno}R 締切${closeTime}`,
-    block('◎本線', mc, allM.slice(0, nm)),
-    block('★穴', ac, allA.slice(0, na)),
+    skip ? '⚠️見送り\n人気サイドに配当が偏り、期待値1.0を超える買い目がありません' : '',
+    block('◎本線', mc, pred.ev_main, allM.slice(0, nm)),
+    block('★穴', ac, pred.ev_ana, allA.slice(0, na)),
   ].filter(Boolean).join('\n\n') + '\n';
 
   // 圧縮表記のおかげで全点そのまま載ることが多い。収まらないときだけ、
@@ -1854,6 +1977,7 @@ app.all('/api/auto-post', async (req, res) => {
         const legacy = !p.v;
         const mm = legacy ? (p.matoi || []).slice(0, 4) : (p.matoi || []);
         const aa = legacy ? (p.ana   || []).slice(0, 2) : (p.ana   || []);
+        if (!mm.length && !aa.length) return null;   // 見送りを出したレースは集計対象外
         const hit = mm.includes(tri) ? 'matoi' : aa.includes(tri) ? 'ana' : 'none';
         return { venue: p.venue, rno: p.rno, result: tri, pay, hit, points: mm.length + aa.length };
       }));
