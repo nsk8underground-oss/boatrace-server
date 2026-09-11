@@ -1646,24 +1646,136 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
   catch { return { error: '予想の解析に失敗' }; }
 }
 
-// レース予想のツイート本文（280重みに収まるよう展開文を自動短縮）
+// 3連単の買い目表記を正規化する（全角や矢印など表記ゆれを 1-2-3 形式に揃える）。
+// 3艇が重複する・6艇の範囲外など不正なものは null を返す
+function normTrifecta(combo) {
+  const s = String(combo ?? '')
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[－ｰー―‐‑–—→>]/g, '-');   // 全角ハイフンや矢印などの区切りを半角に揃える
+  const m = s.match(/^\s*([1-6])\s*-\s*([1-6])\s*-\s*([1-6])\s*$/);
+  if (!m) return null;
+  const [, a, b, c] = m;
+  if (a === b || b === c || a === c) return null;
+  return `${a}-${b}-${c}`;
+}
+
+// 圧縮表記をもとの買い目に戻す（圧縮が正しいかを検証するために使う）
+//   1-2-34 → 1-2-3, 1-2-4 ／ 1=2-3 → 1-2-3, 2-1-3
+function expandTrifectaToken(token) {
+  const m = String(token).match(/^([1-6])([-=])([1-6])-([1-6]+)$/);
+  if (!m) return null;
+  const [, a, sep, b, thirds] = m;
+  const heads = sep === '=' ? [[a, b], [b, a]] : [[a, b]];
+  const out = [];
+  for (const [x, y] of heads) {
+    for (const c of thirds) {
+      if (c === x || c === y) return null;
+      out.push(`${x}-${y}-${c}`);
+    }
+  }
+  return out;
+}
+
+// 3連単の買い目をまとめて読みやすくする
+//   1-2-3, 1-2-4 → 1-2-34（3着ちがいをまとめる）
+//   1-2-3, 2-1-3 → 1=2-3 （1・2着の入れ替わり）
+// 圧縮結果を展開し直してもとの買い目と一致しない場合は、
+// 表記が買い目とずれる方が害が大きいので圧縮せずそのまま返す
+function compressTrifecta(combos) {
+  const raw = (combos || []).map(c => String(c).trim()).filter(Boolean);
+  const list = [];
+  for (const c of raw) {
+    const t = normTrifecta(c);
+    if (!t) return raw;                       // 想定外の表記が混ざるなら触らない
+    if (!list.includes(t)) list.push(t);
+  }
+  if (!list.length) return raw;
+
+  // 1着・2着が同じものをまとめ、3着を並べる
+  const groups = new Map();
+  for (const t of list) {
+    const [a, b, c] = t.split('-');
+    const k = `${a}-${b}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  }
+  // 1着・2着が入れ替わった組で3着が揃っているなら a=b にまとめる
+  const out = [];
+  const used = new Set();
+  for (const [k, thirds] of groups) {
+    if (used.has(k)) continue;
+    used.add(k);
+    const [a, b] = k.split('-');
+    const sorted = [...thirds].sort().join('');
+    const rk = `${b}-${a}`;
+    const rev = groups.get(rk);
+    if (rev && !used.has(rk) && [...rev].sort().join('') === sorted) {
+      used.add(rk);
+      out.push(`${a}=${b}-${sorted}`);
+    } else {
+      out.push(`${a}-${b}-${sorted}`);
+    }
+  }
+
+  // 展開し直して一致を確認する
+  const back = [];
+  for (const tok of out) {
+    const ex = expandTrifectaToken(tok);
+    if (!ex) return raw;
+    back.push(...ex);
+  }
+  const key = arr => [...new Set(arr)].sort().join(',');
+  if (key(back) !== key(list)) return raw;
+  return out;
+}
+
+// レース予想のツイート本文。
+// 返り値の matoi / ana は「実際に本文へ載せた買い目」で、結果まとめの的中判定は
+// これを使う。投稿していない買い目で的中と書いてしまうのを防ぐため
 function buildRaceTweet(venue, rno, closeTime, pred) {
-  const matoi = (pred.matoi || []).slice(0, 4).join(' ');
-  const ana   = (pred.ana   || []).slice(0, 2).join(' ');
+  // AIの出力には表記ゆれや重複が混ざることがある。1-2-3 形式に揃えて重複を除く。
+  // 3連単として成立しないもの（艇番の重複や桁不足）は買えないので落とす。
+  // ただし全部が想定外の形式なら、勝手に消さずそのまま載せる
+  const clean = arr => {
+    const raw = (arr || []).map(v => String(v).trim()).filter(Boolean);
+    const seen = new Set(), out = [];
+    for (const c of raw) {
+      const k = normTrifecta(c);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(k);
+    }
+    return out.length ? out : raw;
+  };
+  const allM = clean(pred.matoi);
+  const allA = clean(pred.ana);
   const mc = parseInt(pred.main_conf) || 0;
   const ac = parseInt(pred.ana_conf) || 0;
-  const head =
-    `🚤${venue} ${rno}R 締切${closeTime}\n\n` +
-    `◎本線 信頼度${mc}%\n${matoi}\n\n` +
-    `★穴 信頼度${ac}%\n${ana}\n`;
   const tail = `\n#競艇 #ボートレース #${venue}`;
+  // 買い目が無いほうの見出しは出さない（「★穴 信頼度0%」だけが残るのを防ぐ）
+  const block = (mark, conf, combos) =>
+    combos.length ? `${mark} 信頼度${conf}%\n${compressTrifecta(combos).join('　')}` : '';
+  const render = (nm, na) => [
+    `🚤${venue} ${rno}R 締切${closeTime}`,
+    block('◎本線', mc, allM.slice(0, nm)),
+    block('★穴', ac, allA.slice(0, na)),
+  ].filter(Boolean).join('\n\n') + '\n';
+
+  // 圧縮表記のおかげで全点そのまま載ることが多い。収まらないときだけ、
+  // 優先度の低い末尾から削る（穴を先に削り、本線を残す）
+  let nm = allM.length, na = allA.length;
+  let head = render(nm, na);
+  while (xLen(head) + xLen(tail) > 280 && nm + na > 2) {
+    if (na > 1 && na >= nm) na--; else if (nm > 1) nm--; else na--;
+    head = render(nm, na);
+  }
+
   let tenkai = String(pred.tenkai_main || '').replace(/\s+/g, ' ').trim();
   const room = 280 - xLen(head) - xLen(tail) - 2;
-  if (room > 20 && tenkai) {
-    while (tenkai && xLen(tenkai) > room) tenkai = tenkai.slice(0, -1);
-    return head + '\n' + tenkai + tail;
-  }
-  return head + tail;
+  const text = (room > 20 && tenkai)
+    ? head + '\n' + (() => { while (tenkai && xLen(tenkai) > room) tenkai = tenkai.slice(0, -1); return tenkai; })() + tail
+    : head + tail;
+  return { text, matoi: allM.slice(0, nm), ana: allA.slice(0, na) };
 }
 
 // 本日の投稿分の結果まとめツイート
@@ -1672,10 +1784,12 @@ function buildResultTweet(hd, rows) {
   const judged = rows.filter(r => r.result);
   const hits = judged.filter(r => r.hit === 'matoi' || r.hit === 'ana');
   const payout = hits.reduce((s, r) => s + (r.pay || 0), 0);
-  const invested = judged.length * 1600; // 16点×100円想定
+  // 投稿した買い目の点数はレースごとに異なるので、実際の点数から投資額を出す
+  const points = judged.reduce((s, r) => s + (r.points || 0), 0);
+  const invested = points * 100;
   const roi = invested ? Math.round(payout / invested * 100) : 0;
   const head = `📊本日のAI予想結果 ${md}\n\n`;
-  const tail = `\n的中 ${hits.length}/${judged.length}　回収率${roi}%\n（本線+穴 計16点×100円想定）\n\n#競艇 #ボートレース`;
+  const tail = `\n的中 ${hits.length}/${judged.length}　回収率${roi}%\n（計${points}点×100円 ¥${invested.toLocaleString()}→¥${payout.toLocaleString()}）\n\n#競艇 #ボートレース`;
   let body = '';
   for (const r of judged) {
     const mark = r.hit === 'matoi' ? '◎的中' : r.hit === 'ana' ? '★的中' : '―';
@@ -1735,8 +1849,13 @@ app.all('/api/auto-post', async (req, res) => {
         if (!r.order || r.order.length < 3) return null;
         const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
         const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
-        const hit = (p.matoi || []).includes(tri) ? 'matoi' : (p.ana || []).includes(tri) ? 'ana' : 'none';
-        return { venue: p.venue, rno: p.rno, result: tri, pay, hit };
+        // 判定は「投稿した買い目」だけで行う。v3.25以前の履歴は全点を保存していたが
+        // 本文には本線4点・穴2点しか載せていなかったため、その範囲に絞る
+        const legacy = !p.v;
+        const mm = legacy ? (p.matoi || []).slice(0, 4) : (p.matoi || []);
+        const aa = legacy ? (p.ana   || []).slice(0, 2) : (p.ana   || []);
+        const hit = mm.includes(tri) ? 'matoi' : aa.includes(tri) ? 'ana' : 'none';
+        return { venue: p.venue, rno: p.rno, result: tri, pay, hit, points: mm.length + aa.length };
       }));
       const rows = settled.filter(Boolean);
       if (!rows.length) return res.json({ ok: true, skipped: '確定した結果なし' });
@@ -1824,8 +1943,9 @@ app.all('/api/auto-post', async (req, res) => {
     timing.predict = Date.now() - tPred;
     if (got.error) return res.json({ ok: false, target, error: got.error, timing });
 
-    const text = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
-    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), predCached: got.cached, timing });
+    const tw = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
+    const text = tw.text;
+    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), points: tw.matoi.length + tw.ana.length, posting: { matoi: tw.matoi, ana: tw.ana }, predCached: got.cached, timing });
 
     const posted = await postToX(text);
     // 同一内容の重複投稿をXは403で拒否する。これは「既に投稿済み」であって
@@ -1841,7 +1961,8 @@ app.all('/api/auto-post', async (req, res) => {
       try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
       // 同じレースが履歴に二重登録されないようにする
       if (!log.some(p => p.jcd === target.jcd && p.rno === target.rno)) {
-        log.push({ jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: got.pred.matoi || [], ana: got.pred.ana || [] });
+        // 本文に載せた買い目だけを残す（結果まとめの的中判定がこれを使う）
+        log.push({ v: 2, jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: tw.matoi, ana: tw.ana });
         await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
       }
       await redisCmd('DEL', 'xhold');
