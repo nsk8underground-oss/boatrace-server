@@ -434,14 +434,14 @@ input,select{font-family:var(--sans);}
         <div style="font-size:10px;color:var(--gold);font-family:var(--mono);font-weight:700;letter-spacing:0.1em;margin-bottom:8px">🏄 展開予想</div>
         <div id="tenkaiMain" style="display:none;background:rgba(0,200,140,0.06);border:1px solid rgba(0,200,140,0.25);border-radius:8px;padding:10px 12px;margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
-            <span style="font-size:10px;font-weight:700;color:var(--accent2);font-family:var(--mono)">◎ 本線展開 — この流れなら本線8点</span>
+            <span style="font-size:10px;font-weight:700;color:var(--accent2);font-family:var(--mono)">◎ 本線展開 — この流れなら本線</span>
             <span id="tenkaiMainConf"></span>
           </div>
           <div class="ai-text" id="tenkaiMainText"></div>
         </div>
         <div id="tenkaiAna" style="display:none;background:rgba(245,193,24,0.05);border:1px solid rgba(245,193,24,0.25);border-radius:8px;padding:10px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
-            <span style="font-size:10px;font-weight:700;color:var(--gold);font-family:var(--mono)">★ 穴展開 — 波乱ならこの穴8点</span>
+            <span style="font-size:10px;font-weight:700;color:var(--gold);font-family:var(--mono)">★ 穴展開 — 波乱ならこの穴</span>
             <span id="tenkaiAnaConf"></span>
           </div>
           <div class="ai-text" id="tenkaiAnaText"></div>
@@ -453,13 +453,13 @@ input,select{font-family:var(--sans);}
       <div class="sec">予想結果 <span style="color:var(--muted);font-size:9px">— 三連単フォーメーション</span></div>
       <div class="pred-section">
         <div class="pred-section-lbl matoi">◎ 本線</div>
-        <div class="pred-section-sub">8点フォーメーション</div>
+        <div class="pred-section-sub">期待値1.00超えのみ</div>
         <span id="matoiConfBadge"></span>
       </div>
       <div class="pred-list" id="predScrollMatoi"></div>
       <div class="pred-section" style="margin-top:4px">
         <div class="pred-section-lbl ana">★ 高配当穴</div>
-        <div class="pred-section-sub">8点フォーメーション</div>
+        <div class="pred-section-sub">期待値1.00超えのみ</div>
         <span id="anaConfBadge"></span>
       </div>
       <div class="pred-list" id="predScrollAna"></div>
@@ -532,7 +532,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.25';
+const APP_VERSION = 'v3.27';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -845,8 +845,9 @@ function buildHistory() {
   const anaHits   = judged.filter(h => h.hit === 'ana').length;
   const payout = history.reduce((s, h) => s + (h.payout || 0), 0);
   const rate = judged.length ? Math.round(hits.length / judged.length * 100) : 0;
-  // 回収率: 16点×100円=1600円/レースを判定済み全レースに投資したと仮定
-  const invested = judged.length * 1600;
+  // 回収率: 保存した買い目の実点数×100円を投資額とする（点数はレースごとに変わる）
+  const points = judged.reduce((s, h) => s + (((h.matoi||[]).length + (h.ana||[]).length) || 16), 0);
+  const invested = points * 100;
   const roi = invested ? Math.round(payout / invested * 100) : 0;
   const roiColor = roi >= 100 ? 'var(--accent2)' : roi >= 75 ? 'var(--gold)' : 'var(--red)';
   el.innerHTML = `
@@ -858,7 +859,7 @@ function buildHistory() {
     </div>
     <div style="margin:0 14px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
-        <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">💰 回収率シミュレーション<br><span style="font-size:9px">全16点×100円（1レース¥1,600）購入と仮定</span></div>
+        <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">💰 回収率シミュレーション<br><span style="font-size:9px">買い目 計${points}点×100円で購入と仮定</span></div>
         <div style="text-align:right">
           <div style="font-size:20px;font-weight:700;font-family:var(--mono);color:${roiColor}">${roi}%</div>
           <div style="font-size:9px;color:var(--muted);font-family:var(--mono)">投資¥${invested.toLocaleString()} → 回収¥${payout.toLocaleString()}</div>
@@ -879,7 +880,7 @@ function buildHistory() {
           <div class="hist-result ${hitCls}">${hitTxt}</div>
         </div>
         ${resultLine}
-        <div class="hist-combos-row"><span class="pred-section-lbl matoi" style="font-size:9px;padding:2px 6px;flex-shrink:0">的中重視</span><span class="hist-combo-txt">${(h.matoi||[]).join(' / ')}</span></div>
+        <div class="hist-combos-row"><span class="pred-section-lbl matoi" style="font-size:9px;padding:2px 6px;flex-shrink:0">◎本線</span><span class="hist-combo-txt">${(h.matoi||[]).join(' / ')}</span></div>
         <div class="hist-combos-row" style="margin-top:3px"><span class="pred-section-lbl ana" style="font-size:9px;padding:2px 6px;flex-shrink:0">穴予想</span><span class="hist-combo-txt">${(h.ana||[]).join(' / ')}</span></div>
         ${h.payout ? `<div style="font-size:11px;color:var(--gold);padding:4px 12px">払戻: ¥${(h.payout||0).toLocaleString()}</div>` : ''}
         <div class="hist-bot">
@@ -1710,7 +1711,7 @@ async function runPredict(auto = false) {
   const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
   // ex0/ex1: 展示タイム反映前後で別キー — 展示反映後は新しい予想に自動アップグレードされる
   const hasEx = raceData.racers.some(r => r.exhibitTime != null);
-  const cacheKey = `v4_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
+  const cacheKey = `v5_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
 
   let sharedData = null;
   if (auto) {
@@ -1753,7 +1754,8 @@ async function runPredict(auto = false) {
   const tAdv    = tideAdvice[tide]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
   const weather = raceData?.weather || {};
 
-  // 3連単オッズを先読みしてAIに渡す — 市場の人気と実力データの乖離（妙味）を判断させる
+  // 3連単オッズを先読みしてサーバーへ渡す。
+  // AIには人気を見せず、AIの確率見積もりと実オッズの期待値でサーバー側が買い目を決める
   let odds3tPre = null;
   if (!auto) {
     try {
@@ -1762,10 +1764,6 @@ async function runPredict(auto = false) {
       if (Object.keys(o3).length) odds3tPre = o3;
     } catch {}
   }
-  const oddsTop = odds3tPre
-    ? Object.entries(odds3tPre).sort((a, b) => a[1] - b[1]).slice(0, 10).map(([k, v], i) => `${i+1}番人気:${k}(${v}倍)`).join(' ')
-    : '';
-  const oddsLine = oddsTop ? `\n【3連単オッズ上位10＝市場の人気】\n${oddsTop}\n` : '';
 
   const prompt = `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
@@ -1779,34 +1777,36 @@ ${fixLine}
 
 【出走表（boatrace.jp 実データ）】
 ${lines}
-${oddsLine}
+
+【重要・予想の方針】
+オッズ（市場の人気）はこのプロンプトでは渡しません。人気は他人の予想であって的中確率の根拠ではなく、
+人気順に買うと控除率25%のぶんだけ回収率が必ず100%を下回ります。
+あなたの仕事は「当てにいく買い目を選ぶこと」ではなく、選手・モーター・展示・コース・気象から
+各組の的中確率を正直に見積もることです。サーバー側でその確率と実際のオッズを突き合わせ、
+期待値（確率×オッズ）が1.0を超える組だけを買い目として採用します。
+的中確率を高く見せようとして人気サイドに寄せる必要はありません。薄いと思う組は薄いままにしてください。
+
 以下のJSON形式のみで回答（バッククォート不要）:
 {
   "analysis": "280文字以内の総合分析",
-  "tenkai_main": "本線展開シナリオ130文字以内。どの艇がどう決まればmatoi8点が的中するか、選手の戦術・コース取りを具体的に（例：1号艇が先マイし2・3号艇が壁になって続く堅い流れならこの本線）",
-  "tenkai_ana": "穴展開シナリオ130文字以内。どんな波乱が起きればana8点が飛び出すか具体的に（例：4号艇がカドから一撃、1号艇が凹めば高配当のこの並び）",
-  "main_conf": 本線が的中する信頼度を0〜100の数字で,
-  "ana_conf": 穴展開が起きる可能性を0〜100の数字で,
+  "tenkai_main": "最有力の展開シナリオ130文字以内。どの艇がどう決まるのが本線か、戦術・コース取りを具体的に",
+  "tenkai_ana": "波乱の展開シナリオ130文字以内。何が起きれば高配当になるか具体的に",
   "wind_effect": "90文字以内",
   "tide_effect": "90文字以内",
   "motor_comment": "80文字以内",
   "focus": "注目艇番号（数字のみ）",
   "focus_reason": "80文字以内",
-  "matoi": ["本線①","本線②","本線③","本線④","本線⑤","本線⑥","本線⑦","本線⑧"],
-  "ana":   ["穴①","穴②","穴③","穴④","穴⑤","穴⑥","穴⑦","穴⑧"]
+  "cands": [{"c":"1-2-3","p":18},{"c":"1-3-2","p":9}]
 }
-matoiは三連単の的中重視フォーメーション8点（本命軸から相手を広げた買い目構成。例: 1-2-全 + 1-3-2など）、
-anaは高配当を狙う穴フォーメーション8点（本線と重複しない並び。オッズ50倍以上を意識）。
-オッズ情報がある場合: 市場の人気と選手・モーター・展示の実力データに乖離がある並びは
-「過小評価された妙味」として積極的に評価し、特にana8点に活かすこと。
-全て "艇番-艇番-艇番" 形式（例: "1-2-3"）で記載。matoi内・ana内で重複なし。
-tenkai_mainとtenkai_anaは、それぞれの買い目が的中する展開条件を対比が分かるように描写。
-main_confとana_confの合計が100になる必要はない（それぞれ独立した確度）。`;
+candsは3連単の候補を18〜24組。cは "艇番-艇番-艇番" 形式、pは的中確率(%)の見積もり（小数可）。
+3連単の各組は同時に起こらないので、pの合計は100を超えないこと。
+p が 1 未満になるほど薄い組は入れないこと。同じ組を重複させないこと。
+堅い組だけを並べず、条件から見て起こりうる波乱の組も確率相応の p で入れること。${fixLine ? '\n1着固定の指定がある場合は、candsも全てその艇が1着の組にすること。' : ''}`;
 
   try {
     const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
     const [predictResp, odds3tResp, odds2tResp, odds3fResp] = await Promise.allSettled([
-      auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry({ prompt, cacheKey, by: getNickname() }, s => {
+      auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry({ prompt, cacheKey, by: getNickname(), odds3t: odds3tPre }, s => {
         aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
       }),
       odds3tPre ? Promise.resolve(null) : fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
@@ -1848,10 +1848,13 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
       const p = Math.max(0, Math.min(100, parseInt(pct) || 0));
       return `<span style="display:inline-flex;align-items:center;gap:5px;font-family:var(--mono)">`
         + `<span style="width:56px;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;width:${p}%;height:100%;background:${color}"></span></span>`
-        + `<span style="font-size:10px;font-weight:700;color:${color}">信頼度${p}%</span></span>`;
+        + `<span style="font-size:10px;font-weight:700;color:${color}">的中率${p}%</span></span>`;
     };
     const mainConf = parseInt(r.main_conf) || 0;
     const anaConf  = parseInt(r.ana_conf)  || 0;
+    // 期待値 = 的中確率 × オッズ。1.00を超えていれば買う価値がある買い目
+    const evBadge = ev => (typeof ev === 'number' && ev > 0)
+      ? `<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--gold);margin-left:6px">期待値${ev.toFixed(2)}</span>` : '';
 
     // 展開予想: 本線展開と穴展開を対比表示（旧形式キャッシュはtenkaiにフォールバック）
     const tMain = r.tenkai_main || '';
@@ -1874,8 +1877,8 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
       tEl.style.display = (!tMain && !tAna && r.tenkai) ? 'block' : 'none';
       if (!tMain && !tAna && r.tenkai) tEl.textContent = r.tenkai;
     }
-    document.getElementById('matoiConfBadge').innerHTML = mainConf ? confBadge(mainConf, 'var(--accent2)') : '';
-    document.getElementById('anaConfBadge').innerHTML   = anaConf  ? confBadge(anaConf,  'var(--gold)')    : '';
+    document.getElementById('matoiConfBadge').innerHTML = (mainConf ? confBadge(mainConf, 'var(--accent2)') : '') + evBadge(r.ev_main);
+    document.getElementById('anaConfBadge').innerHTML   = (anaConf  ? confBadge(anaConf,  'var(--gold)')    : '') + evBadge(r.ev_ana);
 
     const matoiList = (r.matoi || []).slice(0, 8);
     const anaList   = (r.ana   || []).slice(0, 8);
@@ -1897,11 +1900,24 @@ main_confとana_confの合計が100になる必要はない（それぞれ独立
     const predRow = (cls, v, i, note) =>
       `<div class="pred-row ${cls}"><span class="pr-idx">${CIRCLED[i]||i+1}</span>${comboDots(v)}<span class="pr-val">${v}</span><span class="pr-note">${note}</span>${rowOdds(v)}</div>`;
 
-    document.getElementById('predScrollMatoi').innerHTML =
-      matoiList.map((v, i) => predRow('matoi', v, i, i===0?'◎本命':i===1?'対抗':'押さえ')).join('');
+    // 各買い目の期待値を注記に出す（なぜ買うのかを人気ではなく数字で示す）
+    const evMap = Object.fromEntries((r.ev_detail || []).map(d => [d.c, d]));
+    const rowNote = (v, i, fallback) => {
+      const d = evMap[v];
+      return d ? `期待値${d.ev.toFixed(2)}（確率${d.p}%）` : fallback;
+    };
+    if (!matoiList.length && !anaList.length) {
+      // 期待値1.0超えが1点も無いレース。無理に買わないことが回収率を守るいちばんの方法
+      document.getElementById('predScrollMatoi').innerHTML =
+        `<div class="pred-row" style="color:var(--orange);display:block;padding:12px">⚠️ 見送り推奨 — 期待値1.00を超える買い目がありません。${r.ev_mode === 'noodds' ? '（3連単オッズを取得できませんでした）' : '人気サイドに配当が偏っています。'}</div>`;
+      document.getElementById('predScrollAna').innerHTML = '';
+    } else {
+      document.getElementById('predScrollMatoi').innerHTML =
+        matoiList.map((v, i) => predRow('matoi', v, i, rowNote(v, i, i===0?'◎本命':i===1?'対抗':'押さえ'))).join('');
 
-    document.getElementById('predScrollAna').innerHTML =
-      anaList.map((v, i) => predRow('ana', v, i, i===0?'★本線穴':i===1?'穴対抗':'穴押さえ')).join('');
+      document.getElementById('predScrollAna').innerHTML =
+        anaList.map((v, i) => predRow('ana', v, i, rowNote(v, i, i===0?'★本線穴':i===1?'穴対抗':'穴押さえ'))).join('');
+    }
 
     document.getElementById('effCards').innerHTML = `
       <div class="eff-card"><div class="eff-icon">💨</div><div class="eff-lbl">風況影響</div><div class="eff-text">${r.wind_effect}</div></div>
@@ -2066,7 +2082,7 @@ async function checkResult() {
       + '<div style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--gold)">' + trifecta + '</div>'
       + (pay3t ? '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:var(--accent2)">¥' + (pay3t.pay||0).toLocaleString() + '</div>' : '')
       + '</div>'
-      + (matoiHit ? '<div style="color:var(--accent2);font-weight:700;font-family:var(--mono);margin-bottom:4px">◎ 的中重視 HIT！🎉</div>' : '')
+      + (matoiHit ? '<div style="color:var(--accent2);font-weight:700;font-family:var(--mono);margin-bottom:4px">◎ 本線 HIT！🎉</div>' : '')
       + (anaHit   ? '<div style="color:var(--gold);font-weight:700;font-family:var(--mono);margin-bottom:4px">★ 穴予想 HIT！🎉</div>' : '')
       + (!matoiHit && !anaHit && hist ? '<div style="color:var(--muted);font-size:12px;margin-bottom:4px">今回の予想は不的中でした</div>' : '')
       + (otherPays ? '<div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:6px">' + otherPays + '</div>' : '')

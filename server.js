@@ -1307,7 +1307,7 @@ async function callGemini(prompt, budgetMs = 26000) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
       const generationConfig = {
         temperature: 0.7,
-        maxOutputTokens: 4096, // 8点×2+シナリオ2本。少なすぎるとJSONが途中で切れて全滅する
+        maxOutputTokens: 4096, // 候補20点前後+シナリオ2本。少なすぎるとJSONが途中で切れて全滅する
         responseMimeType: 'application/json',
       };
       // thinkingConfig は 2.5系のみ対応（2.0系に送ると400エラー）
@@ -1408,7 +1408,7 @@ function storePredict(cacheKey, result) {
 
 // AI予想エンドポイント（Gemini）
 app.post('/api/predict', async (req, res) => {
-  const { prompt, cacheKey, by } = req.body;
+  const { prompt, cacheKey, by, odds3t } = req.body;
   if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
   if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
 
@@ -1418,9 +1418,23 @@ app.post('/api/predict', async (req, res) => {
     if (hit) return res.json({ ...hit, cached: true });
   }
 
+  // 3連単オッズを受け取れたら、買い目の選定はここで期待値から行う。
+  // BOTと同じ関数を通すので、共有キャッシュ越しに両方が同じ買い目を見る
+  let odds = null;
+  if (odds3t && typeof odds3t === 'object' && !Array.isArray(odds3t)) {
+    const ent = Object.entries(odds3t).slice(0, 120);
+    odds = {};
+    for (const [k, v] of ent) {
+      const c = normTrifecta(k), o = Number(v);
+      if (c && isFinite(o) && o > 0) odds[c] = o;
+    }
+  }
+
   const r = await callGemini(prompt);
   if (!r.ok) return res.status(r.status).json(r.body);
-  const result = { content: [{ text: r.jsonText }], model: r.model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
+  let text = r.jsonText;
+  try { text = JSON.stringify(applyEV(JSON.parse(r.jsonText), odds)); } catch {}
+  const result = { content: [{ text }], model: r.model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
   storePredict(cacheKey, result);
   res.json(result);
 });
@@ -1554,16 +1568,50 @@ app.get('/api/x-health', async (req, res) => {
 });
 
 // 自動投稿用の予想プロンプト（フロントと同じJSONスキーマ＝生成結果をアプリでもそのまま共有できる）
-function buildAutoPrompt(venue, rno, racers, weather, odds3t) {
+// ===== 期待値ベースの買い目選定 =====
+// 「オッズが安い＝人気＝当たりやすい」で選ぶと、控除率25%のぶんだけ必ず負ける。
+// AIには人気を見せずに各組の的中確率だけを見積もらせ、実際のオッズと突き合わせて
+// 期待値（確率×オッズ）が1.0を超える買い目だけを採用する。
+const EV_MIN_MAIN  = 1.05;   // 本線に採用する最低期待値
+const EV_MIN_ANA   = 1.20;   // 穴は当たりが薄くブレるので高めに要求する
+const ANA_MIN_ODDS = 30;     // これ以上を穴として扱う
+const MAX_POINTS   = 8;      // 1セクションの最大点数
+const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
+
+// 両プロンプト（BOT側・アプリ側）で同じ出力形式にする。
+// 共有キャッシュを双方で使い回すため、形式がずれると片方が壊れる
+const EV_PROMPT_RULES = `【重要・予想の方針】
+オッズ（市場の人気）はこのプロンプトでは渡しません。人気は他人の予想であって的中確率の根拠ではなく、
+人気順に買うと控除率25%のぶんだけ回収率が必ず100%を下回ります。
+あなたの仕事は「当てにいく買い目を選ぶこと」ではなく、選手・モーター・展示・コース・気象から
+各組の的中確率を正直に見積もることです。サーバー側でその確率と実際のオッズを突き合わせ、
+期待値（確率×オッズ）が1.0を超える組だけを買い目として採用します。
+的中確率を高く見せようとして人気サイドに寄せる必要はありません。薄いと思う組は薄いままにしてください。
+
+以下のJSON形式のみで回答（バッククォート不要）:
+{
+  "analysis": "280文字以内の総合分析",
+  "tenkai_main": "最有力の展開シナリオ130文字以内。どの艇がどう決まるのが本線か具体的に",
+  "tenkai_ana": "波乱の展開シナリオ130文字以内。何が起きれば高配当になるか具体的に",
+  "wind_effect": "90文字以内",
+  "tide_effect": "90文字以内",
+  "motor_comment": "80文字以内",
+  "focus": "注目艇番号（数字のみ）",
+  "focus_reason": "80文字以内",
+  "cands": [{"c":"1-2-3","p":18},{"c":"1-3-2","p":9}]
+}
+candsは3連単の候補を18〜24組。cは "艇番-艇番-艇番" 形式、pは的中確率(%)の見積もり（小数可）。
+3連単の各組は同時に起こらないので、pの合計は100を超えないこと。
+p が 1 未満になるほど薄い組は入れないこと。同じ組を重複させないこと。
+堅い組だけを並べず、条件から見て起こりうる波乱の組も確率相応の p で入れること。`;
+
+function buildAutoPrompt(venue, rno, racers, weather) {
   const lines = racers.map(r =>
     `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
     `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
-    `単勝:${r.odds != null ? r.odds.toFixed(1) + '倍' : '不明'} モーター:${r.motorGrade || '未評価'}(2連${r.motor2Rate || 0}%) ` +
+    `モーター:${r.motorGrade || '未評価'}(2連${r.motor2Rate || 0}%) ` +
     `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
   ).join('\n');
-  const top = Object.entries(odds3t || {}).sort((a, b) => a[1] - b[1]).slice(0, 10)
-    .map(([k, v], i) => `${i + 1}番人気:${k}(${v}倍)`).join(' ');
-  const oddsLine = top ? `\n【3連単オッズ上位10＝市場の人気】\n${top}\n` : '';
 
   return `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
@@ -1572,28 +1620,91 @@ function buildAutoPrompt(venue, rno, racers, weather, odds3t) {
 
 【出走表（boatrace.jp 実データ）】
 ${lines}
-${oddsLine}
-以下のJSON形式のみで回答（バッククォート不要）:
-{
-  "analysis": "280文字以内の総合分析",
-  "tenkai_main": "本線展開シナリオ130文字以内。どの艇がどう決まればmatoi8点が的中するか具体的に",
-  "tenkai_ana": "穴展開シナリオ130文字以内。どんな波乱が起きればana8点が飛び出すか具体的に",
-  "main_conf": 本線が的中する信頼度を0〜100の数字で,
-  "ana_conf": 穴展開が起きる可能性を0〜100の数字で,
-  "wind_effect": "90文字以内",
-  "tide_effect": "90文字以内",
-  "motor_comment": "80文字以内",
-  "focus": "注目艇番号（数字のみ）",
-  "focus_reason": "80文字以内",
-  "matoi": ["本線①","本線②","本線③","本線④","本線⑤","本線⑥","本線⑦","本線⑧"],
-  "ana":   ["穴①","穴②","穴③","穴④","穴⑤","穴⑥","穴⑦","穴⑧"]
+
+${EV_PROMPT_RULES}`;
 }
-matoiは三連単の的中重視フォーメーション8点（本命軸から相手を広げた買い目構成）、
-anaは高配当を狙う穴フォーメーション8点（本線と重複しない並び。オッズ50倍以上を意識）。
-オッズ情報がある場合: 市場の人気と実力データに乖離がある並びは「過小評価された妙味」として
-積極的に評価し、特にana8点に活かすこと。
-全て "艇番-艇番-艇番" 形式（例: "1-2-3"）で記載。matoi内・ana内で重複なし。
-main_confとana_confの合計が100になる必要はない（それぞれ独立した確度）。`;
+
+// AIの確率見積もりと実オッズから買い目を決める。
+// pred を書き換えて返す（matoi / ana / main_conf / ana_conf / ev_* を設定）
+function applyEV(pred, odds3t) {
+  const odds = odds3t && typeof odds3t === 'object' && Object.keys(odds3t).length ? odds3t : null;
+
+  // 候補の正規化。表記ゆれ・重複・壊れた確率を落とす
+  const rows = [];
+  for (const c of Array.isArray(pred.cands) ? pred.cands : []) {
+    const combo = normTrifecta(c && (c.c ?? c.combo));
+    const p = Number(c && (c.p ?? c.prob));
+    if (!combo || !isFinite(p) || p <= 0) continue;
+    if (rows.some(r => r.combo === combo)) continue;
+    rows.push({ combo, p });
+  }
+
+  // 候補が無い（旧形式のキャッシュや生成失敗）ときは従来の matoi / ana をそのまま使う
+  if (!rows.length) {
+    pred.ev_mode = 'none';
+    return pred;
+  }
+
+  // 3連単の各組は排反なので確率の合計は100%を超えない。
+  // 超えていたらAIが確率を盛っているので、比率を保って縮める（期待値の水増しを防ぐ）
+  const sum = rows.reduce((s, r) => s + r.p, 0);
+  const k = sum > 100 ? 100 / sum : 1;
+  for (const r of rows) {
+    r.p = r.p * k;
+    r.odds = odds ? (odds[r.combo] ?? null) : null;
+    r.ev = r.odds ? r.p / 100 * r.odds : null;
+  }
+  pred.ev_scaled = k < 1 ? Math.round(sum) : undefined;
+
+  const byP  = (a, b) => b.p - a.p;
+  const byEV = (a, b) => b.ev - a.ev;
+  // 合計が100%を大きく超える出力は確率の見積もり自体が信用できない。
+  // 縮めれば数字は整うが、それで出した期待値を根拠にするのは誠実ではないので、
+  // 期待値は名乗らず確率順に並べるだけにする
+  const unreliable = sum > EV_SUM_LIMIT;
+  const usable = unreliable ? [] : rows.filter(r => r.ev != null);
+
+  let main, ana;
+  if (usable.length) {
+    // 期待値が基準を超えた買い目だけを採用する。
+    // そのうち当たりやすい順に本線、残りの高配当 side を穴として足す
+    const qual = usable.filter(r => r.ev >= EV_MIN_MAIN);
+    main = qual.slice().sort(byP).slice(0, MAX_POINTS);
+    const inMain = new Set(main.map(r => r.combo));
+    ana = qual.filter(r => !inMain.has(r.combo) && r.odds >= ANA_MIN_ODDS && r.ev >= EV_MIN_ANA)
+              .sort(byEV).slice(0, MAX_POINTS);
+    pred.ev_mode = 'ev';
+  } else {
+    // オッズが取れなかった / 確率が信用できないときは期待値を出せない。
+    // 確率順に並べるだけにとどめ、期待値は表示しない
+    const sorted = rows.slice().sort(byP);
+    main = sorted.slice(0, MAX_POINTS);
+    ana  = sorted.slice(MAX_POINTS, MAX_POINTS * 2);
+    pred.ev_mode = unreliable ? 'unreliable' : 'noodds';
+  }
+
+  // 期待値（1点100円あたりの期待回収）と的中確率を、選んだ買い目から実際に計算する
+  const stats = list => {
+    if (!list.length) return { conf: 0, ev: null };
+    const conf = Math.round(list.reduce((s, r) => s + r.p, 0));
+    const haveOdds = list.every(r => r.ev != null);
+    return { conf, ev: haveOdds ? +(list.reduce((s, r) => s + r.ev, 0) / list.length).toFixed(2) : null };
+  };
+  const sm = stats(main), sa = stats(ana);
+
+  pred.matoi = main.map(r => r.combo);
+  pred.ana   = ana.map(r => r.combo);
+  pred.main_conf = sm.conf;
+  pred.ana_conf  = sa.conf;
+  pred.ev_main = pred.ev_mode === 'ev' ? sm.ev : null;
+  pred.ev_ana  = pred.ev_mode === 'ev' ? sa.ev : null;
+  // 期待値1.0超えが1点も無いレースは「見送り」を出す。
+  // 無理に買い目を出すことが回収率を下げるいちばんの原因なので、ここは正直に返す
+  pred.ev_skip = pred.ev_mode === 'ev' && !main.length && !ana.length;
+  pred.ev_detail = rows.filter(r => r.ev != null)
+    .sort(byEV).slice(0, 24)
+    .map(r => ({ c: r.combo, p: +r.p.toFixed(1), o: r.odds, ev: +r.ev.toFixed(2) }));
+  return pred;
 }
 
 // 1レース分のデータを集めて予想を取得（共有キャッシュ優先・なければ生成して共有キャッシュに保存）
@@ -1616,7 +1727,8 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
   const odds3t = o3H ? (parseOdds3t(o3H).odds || {}) : {};
 
   const hasEx = Object.keys(before.exhibit).length > 0;
-  const cacheKey = `v4_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
+  // v5: 期待値ベースの選定に切り替えたため、v4 の古い形式は使い回さない
+  const cacheKey = `v5_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
   const cached = await lookupSharedPredict(cacheKey);
   if (cached) {
     try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, schedule: rl.schedule }; } catch {}
@@ -1637,33 +1749,156 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
     motorGrade: motors[r.motorNo]?.grade || '',
   }));
 
-  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {}, odds3t);
+  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {});
   const g = await callGemini(prompt, budgetMs);
   if (!g.ok) return { error: g.body?.error || '予想生成失敗' };
-  const result = { content: [{ text: g.jsonText }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
-  storePredict(cacheKey, result);
-  try { return { pred: JSON.parse(g.jsonText), venue, cached: false, schedule: rl.schedule }; }
+  // 買い目はAIに選ばせず、AIの確率見積もりと実オッズの期待値で決める。
+  // 確定後のJSONをキャッシュに入れるので、アプリ側も同じ買い目を見ることになる
+  let pred;
+  try { pred = applyEV(JSON.parse(g.jsonText), odds3t); }
   catch { return { error: '予想の解析に失敗' }; }
+  const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
+  storePredict(cacheKey, result);
+  return { pred, venue, cached: false, schedule: rl.schedule };
 }
 
-// レース予想のツイート本文（280重みに収まるよう展開文を自動短縮）
+// 3連単の買い目表記を正規化する（全角や矢印など表記ゆれを 1-2-3 形式に揃える）。
+// 3艇が重複する・6艇の範囲外など不正なものは null を返す
+function normTrifecta(combo) {
+  const s = String(combo ?? '')
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[－ｰー―‐‑–—→>]/g, '-');   // 全角ハイフンや矢印などの区切りを半角に揃える
+  const m = s.match(/^\s*([1-6])\s*-\s*([1-6])\s*-\s*([1-6])\s*$/);
+  if (!m) return null;
+  const [, a, b, c] = m;
+  if (a === b || b === c || a === c) return null;
+  return `${a}-${b}-${c}`;
+}
+
+// 圧縮表記をもとの買い目に戻す（圧縮が正しいかを検証するために使う）
+//   1-2-34 → 1-2-3, 1-2-4 ／ 1=2-3 → 1-2-3, 2-1-3
+function expandTrifectaToken(token) {
+  const m = String(token).match(/^([1-6])([-=])([1-6])-([1-6]+)$/);
+  if (!m) return null;
+  const [, a, sep, b, thirds] = m;
+  const heads = sep === '=' ? [[a, b], [b, a]] : [[a, b]];
+  const out = [];
+  for (const [x, y] of heads) {
+    for (const c of thirds) {
+      if (c === x || c === y) return null;
+      out.push(`${x}-${y}-${c}`);
+    }
+  }
+  return out;
+}
+
+// 3連単の買い目をまとめて読みやすくする
+//   1-2-3, 1-2-4 → 1-2-34（3着ちがいをまとめる）
+//   1-2-3, 2-1-3 → 1=2-3 （1・2着の入れ替わり）
+// 圧縮結果を展開し直してもとの買い目と一致しない場合は、
+// 表記が買い目とずれる方が害が大きいので圧縮せずそのまま返す
+function compressTrifecta(combos) {
+  const raw = (combos || []).map(c => String(c).trim()).filter(Boolean);
+  const list = [];
+  for (const c of raw) {
+    const t = normTrifecta(c);
+    if (!t) return raw;                       // 想定外の表記が混ざるなら触らない
+    if (!list.includes(t)) list.push(t);
+  }
+  if (!list.length) return raw;
+
+  // 1着・2着が同じものをまとめ、3着を並べる
+  const groups = new Map();
+  for (const t of list) {
+    const [a, b, c] = t.split('-');
+    const k = `${a}-${b}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  }
+  // 1着・2着が入れ替わった組で3着が揃っているなら a=b にまとめる
+  const out = [];
+  const used = new Set();
+  for (const [k, thirds] of groups) {
+    if (used.has(k)) continue;
+    used.add(k);
+    const [a, b] = k.split('-');
+    const sorted = [...thirds].sort().join('');
+    const rk = `${b}-${a}`;
+    const rev = groups.get(rk);
+    if (rev && !used.has(rk) && [...rev].sort().join('') === sorted) {
+      used.add(rk);
+      out.push(`${a}=${b}-${sorted}`);
+    } else {
+      out.push(`${a}-${b}-${sorted}`);
+    }
+  }
+
+  // 展開し直して一致を確認する
+  const back = [];
+  for (const tok of out) {
+    const ex = expandTrifectaToken(tok);
+    if (!ex) return raw;
+    back.push(...ex);
+  }
+  const key = arr => [...new Set(arr)].sort().join(',');
+  if (key(back) !== key(list)) return raw;
+  return out;
+}
+
+// レース予想のツイート本文。
+// 返り値の matoi / ana は「実際に本文へ載せた買い目」で、結果まとめの的中判定は
+// これを使う。投稿していない買い目で的中と書いてしまうのを防ぐため
 function buildRaceTweet(venue, rno, closeTime, pred) {
-  const matoi = (pred.matoi || []).slice(0, 4).join(' ');
-  const ana   = (pred.ana   || []).slice(0, 2).join(' ');
+  // AIの出力には表記ゆれや重複が混ざることがある。1-2-3 形式に揃えて重複を除く。
+  // 3連単として成立しないもの（艇番の重複や桁不足）は買えないので落とす。
+  // ただし全部が想定外の形式なら、勝手に消さずそのまま載せる
+  const clean = arr => {
+    const raw = (arr || []).map(v => String(v).trim()).filter(Boolean);
+    const seen = new Set(), out = [];
+    for (const c of raw) {
+      const k = normTrifecta(c);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(k);
+    }
+    return out.length ? out : raw;
+  };
+  const allM = clean(pred.matoi);
+  const allA = clean(pred.ana);
   const mc = parseInt(pred.main_conf) || 0;
   const ac = parseInt(pred.ana_conf) || 0;
-  const head =
-    `🚤${venue} ${rno}R 締切${closeTime}\n\n` +
-    `◎本線 信頼度${mc}%\n${matoi}\n\n` +
-    `★穴 信頼度${ac}%\n${ana}\n`;
   const tail = `\n#競艇 #ボートレース #${venue}`;
+  // 期待値（1点100円あたりの期待回収）を見出しに出す。
+  // 「人気だから買う」ではなく「期待値が1.0を超えたから買う」ことを読み手に示すため
+  const evTag = ev => (ev ? ` 期待値${ev.toFixed(2)}` : '');
+  // 買い目が無いほうの見出しは出さない（「★穴 的中率0%」だけが残るのを防ぐ）
+  const block = (mark, conf, ev, combos) =>
+    combos.length ? `${mark} 的中率${conf}%${evTag(ev)}\n${compressTrifecta(combos).join('　')}` : '';
+  // 期待値1.0超えが1点も無いレースは買い目を出さない。
+  // 無理に買うことが回収率を下げるいちばんの原因なので、見送りをそのまま伝える
+  const skip = pred.ev_skip && !allM.length && !allA.length;
+  const render = (nm, na) => [
+    `🚤${venue} ${rno}R 締切${closeTime}`,
+    skip ? '⚠️見送り\n人気サイドに配当が偏り、期待値1.0を超える買い目がありません' : '',
+    block('◎本線', mc, pred.ev_main, allM.slice(0, nm)),
+    block('★穴', ac, pred.ev_ana, allA.slice(0, na)),
+  ].filter(Boolean).join('\n\n') + '\n';
+
+  // 圧縮表記のおかげで全点そのまま載ることが多い。収まらないときだけ、
+  // 優先度の低い末尾から削る（穴を先に削り、本線を残す）
+  let nm = allM.length, na = allA.length;
+  let head = render(nm, na);
+  while (xLen(head) + xLen(tail) > 280 && nm + na > 2) {
+    if (na > 1 && na >= nm) na--; else if (nm > 1) nm--; else na--;
+    head = render(nm, na);
+  }
+
   let tenkai = String(pred.tenkai_main || '').replace(/\s+/g, ' ').trim();
   const room = 280 - xLen(head) - xLen(tail) - 2;
-  if (room > 20 && tenkai) {
-    while (tenkai && xLen(tenkai) > room) tenkai = tenkai.slice(0, -1);
-    return head + '\n' + tenkai + tail;
-  }
-  return head + tail;
+  const text = (room > 20 && tenkai)
+    ? head + '\n' + (() => { while (tenkai && xLen(tenkai) > room) tenkai = tenkai.slice(0, -1); return tenkai; })() + tail
+    : head + tail;
+  return { text, matoi: allM.slice(0, nm), ana: allA.slice(0, na) };
 }
 
 // 本日の投稿分の結果まとめツイート
@@ -1672,10 +1907,12 @@ function buildResultTweet(hd, rows) {
   const judged = rows.filter(r => r.result);
   const hits = judged.filter(r => r.hit === 'matoi' || r.hit === 'ana');
   const payout = hits.reduce((s, r) => s + (r.pay || 0), 0);
-  const invested = judged.length * 1600; // 16点×100円想定
+  // 投稿した買い目の点数はレースごとに異なるので、実際の点数から投資額を出す
+  const points = judged.reduce((s, r) => s + (r.points || 0), 0);
+  const invested = points * 100;
   const roi = invested ? Math.round(payout / invested * 100) : 0;
   const head = `📊本日のAI予想結果 ${md}\n\n`;
-  const tail = `\n的中 ${hits.length}/${judged.length}　回収率${roi}%\n（本線+穴 計16点×100円想定）\n\n#競艇 #ボートレース`;
+  const tail = `\n的中 ${hits.length}/${judged.length}　回収率${roi}%\n（計${points}点×100円 ¥${invested.toLocaleString()}→¥${payout.toLocaleString()}）\n\n#競艇 #ボートレース`;
   let body = '';
   for (const r of judged) {
     const mark = r.hit === 'matoi' ? '◎的中' : r.hit === 'ana' ? '★的中' : '―';
@@ -1735,8 +1972,14 @@ app.all('/api/auto-post', async (req, res) => {
         if (!r.order || r.order.length < 3) return null;
         const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
         const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
-        const hit = (p.matoi || []).includes(tri) ? 'matoi' : (p.ana || []).includes(tri) ? 'ana' : 'none';
-        return { venue: p.venue, rno: p.rno, result: tri, pay, hit };
+        // 判定は「投稿した買い目」だけで行う。v3.25以前の履歴は全点を保存していたが
+        // 本文には本線4点・穴2点しか載せていなかったため、その範囲に絞る
+        const legacy = !p.v;
+        const mm = legacy ? (p.matoi || []).slice(0, 4) : (p.matoi || []);
+        const aa = legacy ? (p.ana   || []).slice(0, 2) : (p.ana   || []);
+        if (!mm.length && !aa.length) return null;   // 見送りを出したレースは集計対象外
+        const hit = mm.includes(tri) ? 'matoi' : aa.includes(tri) ? 'ana' : 'none';
+        return { venue: p.venue, rno: p.rno, result: tri, pay, hit, points: mm.length + aa.length };
       }));
       const rows = settled.filter(Boolean);
       if (!rows.length) return res.json({ ok: true, skipped: '確定した結果なし' });
@@ -1824,8 +2067,9 @@ app.all('/api/auto-post', async (req, res) => {
     timing.predict = Date.now() - tPred;
     if (got.error) return res.json({ ok: false, target, error: got.error, timing });
 
-    const text = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
-    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), predCached: got.cached, timing });
+    const tw = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
+    const text = tw.text;
+    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), points: tw.matoi.length + tw.ana.length, posting: { matoi: tw.matoi, ana: tw.ana }, predCached: got.cached, timing });
 
     const posted = await postToX(text);
     // 同一内容の重複投稿をXは403で拒否する。これは「既に投稿済み」であって
@@ -1841,7 +2085,8 @@ app.all('/api/auto-post', async (req, res) => {
       try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
       // 同じレースが履歴に二重登録されないようにする
       if (!log.some(p => p.jcd === target.jcd && p.rno === target.rno)) {
-        log.push({ jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: got.pred.matoi || [], ana: got.pred.ana || [] });
+        // 本文に載せた買い目だけを残す（結果まとめの的中判定がこれを使う）
+        log.push({ v: 2, jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: tw.matoi, ana: tw.ana });
         await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
       }
       await redisCmd('DEL', 'xhold');
