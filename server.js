@@ -1902,7 +1902,10 @@ function buildRaceTweet(venue, rno, closeTime, pred) {
 }
 
 // 本日の投稿分の結果まとめツイート
-function buildResultTweet(hd, rows) {
+// 本日の投稿分の結果まとめツイート。
+// extra には買い目を出さなかった（見送り）件数と、まだ確定していない件数を渡す。
+// これを書かないと「8レース投稿したのに5件しか出ていない」と食い違って見える
+function buildResultTweet(hd, rows, extra = {}) {
   const md = `${parseInt(hd.slice(4, 6))}/${parseInt(hd.slice(6, 8))}`;
   const judged = rows.filter(r => r.result);
   const hits = judged.filter(r => r.hit === 'matoi' || r.hit === 'ana');
@@ -1911,16 +1914,34 @@ function buildResultTweet(hd, rows) {
   const points = judged.reduce((s, r) => s + (r.points || 0), 0);
   const invested = points * 100;
   const roi = invested ? Math.round(payout / invested * 100) : 0;
-  const head = `📊本日のAI予想結果 ${md}\n\n`;
-  const tail = `\n的中 ${hits.length}/${judged.length}　回収率${roi}%\n（計${points}点×100円 ¥${invested.toLocaleString()}→¥${payout.toLocaleString()}）\n\n#競艇 #ボートレース`;
-  let body = '';
-  for (const r of judged) {
+  // 日付をまたいで前日ぶんを投稿することがあるので、その日は「本日」と書かない
+  const head = `📊${extra.today === false ? 'AI予想結果' : '本日のAI予想結果'} ${md}\n\n`;
+  const notes = [];
+  if (extra.noBet)   notes.push(`見送り${extra.noBet}件`);
+  if (extra.pending) notes.push(`結果待ち${extra.pending}件`);
+  const mkTail = omitted =>
+    `\n的中 ${hits.length}/${judged.length}　回収率${roi}%\n` +
+    `（計${points}点×100円 ¥${invested.toLocaleString()}→¥${payout.toLocaleString()}）` +
+    (notes.length ? `\n${notes.join(' ・ ')}` : '') +
+    (omitted ? `\n※文字数の都合で${omitted}件は省略` : '') +
+    `\n\n#競艇 #ボートレース`;
+  const lines = judged.map(r => {
     const mark = r.hit === 'matoi' ? '◎的中' : r.hit === 'ana' ? '★的中' : '―';
-    const line = `${r.venue}${r.rno}R ${r.result} ${mark}${r.hit && r.hit !== 'none' && r.pay ? ` ¥${r.pay.toLocaleString()}` : ''}\n`;
-    if (xLen(head + body + line + tail) > 280) break;
-    body += line;
-  }
-  return head + body + tail;
+    return `${r.venue}${r.rno}R ${r.result} ${mark}${r.hit && r.hit !== 'none' && r.pay ? ` ¥${r.pay.toLocaleString()}` : ''}\n`;
+  });
+  // 全部載るならそのまま。載らないときは「省略」の一文ぶんも見込んで詰め直す
+  const fit = reserve => {
+    let body = '', n = 0;
+    for (const line of lines) {
+      if (xLen(head + body + line + mkTail(reserve)) > 280) break;
+      body += line; n++;
+    }
+    return { body, n };
+  };
+  const all = fit(0);
+  if (all.n === lines.length) return head + all.body + mkTail(0);
+  const cut = fit(lines.length - all.n);
+  return head + cut.body + mkTail(lines.length - cut.n);
 }
 
 // 自動投稿エンドポイント（GitHub Actions などから定期実行）
@@ -1964,27 +1985,45 @@ app.all('/api/auto-post', async (req, res) => {
       // 定期実行の遅延・欠落に備えて複数回試行するため、1日1回だけ投稿するよう記録で防ぐ
       if (!dryRun && done) return res.json({ ok: true, skipped: `${day} の結果まとめは投稿済み` });
       if (!log.length) return res.json({ ok: true, skipped: '対象となる投稿がありません', checkedDays: [hd, prev] });
-      // 結果は全場ぶんを並列取得する（順次だと Vercel の制限を超える）
+      // 結果は全場ぶんを並列取得する（順次だと Vercel の制限を超える）。
+      // 取得できなかったレースを黙って捨てると「8レース投稿したのに5件しか出ない」
+      // という状態になるため、落ちた理由を state として必ず残す
       const settled = await Promise.all(log.slice(0, 8).map(async p => {
-        const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${day}&rno=${p.rno}`, 10000);
-        if (!html) return null;
-        const r = parseRaceResult(html);
-        if (!r.order || r.order.length < 3) return null;
-        const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
-        const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
+        const base = { venue: p.venue, rno: p.rno };
         // 判定は「投稿した買い目」だけで行う。v3.25以前の履歴は全点を保存していたが
         // 本文には本線4点・穴2点しか載せていなかったため、その範囲に絞る
         const legacy = !p.v;
         const mm = legacy ? (p.matoi || []).slice(0, 4) : (p.matoi || []);
         const aa = legacy ? (p.ana   || []).slice(0, 2) : (p.ana   || []);
-        if (!mm.length && !aa.length) return null;   // 見送りを出したレースは集計対象外
+        // 見送りを出したレースは買い目が無いので的中判定の対象外。件数だけ残す
+        if (!mm.length && !aa.length) return { ...base, state: 'skip' };
+        const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${day}&rno=${p.rno}`, 10000);
+        if (!html) return { ...base, state: 'pending', why: 'fetch' };
+        const r = parseRaceResult(html);
+        if (!r.order || r.order.length < 3) return { ...base, state: 'pending', why: 'notfinal' };
+        const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
+        const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
         const hit = mm.includes(tri) ? 'matoi' : aa.includes(tri) ? 'ana' : 'none';
-        return { venue: p.venue, rno: p.rno, result: tri, pay, hit, points: mm.length + aa.length };
+        return { ...base, state: 'judged', result: tri, pay, hit, points: mm.length + aa.length };
       }));
-      const rows = settled.filter(Boolean);
-      if (!rows.length) return res.json({ ok: true, skipped: '確定した結果なし' });
-      const text = buildResultTweet(day, rows);
-      if (dryRun) return res.json({ ok: true, dryRun: true, day, text, xLen: xLen(text), rows });
+      const rows    = settled.filter(x => x.state === 'judged');
+      const noBet   = settled.filter(x => x.state === 'skip');
+      const pending = settled.filter(x => x.state === 'pending');
+      const counts  = { posted: log.length, judged: rows.length, skip: noBet.length, pending: pending.length };
+
+      // まだ確定していないレースがあるうちは投稿しない。投稿すると xresult でその日は
+      // 打ち切られ、未確定ぶんが永久に集計から欠けてしまうため、次の枠で拾い直す。
+      // ただし日付をまたいだ前日ぶんと、当日でも23時を過ぎたら、あるものだけで投稿する
+      const lastChance = day !== hd || nowMin >= 23 * 60;
+      if (!dryRun && pending.length && !lastChance) {
+        return res.json({ ok: true, skipped: `未確定${pending.length}件。次の枠で投稿します`, day, counts, pending });
+      }
+      if (!rows.length) {
+        const why = noBet.length && !pending.length ? '全レース見送りのため集計対象なし' : '確定した結果なし';
+        return res.json({ ok: true, skipped: why, day, counts });
+      }
+      const text = buildResultTweet(day, rows, { noBet: noBet.length, pending: pending.length, today: day === hd });
+      if (dryRun) return res.json({ ok: true, dryRun: true, day, text, xLen: xLen(text), counts, rows, noBet, pending });
       const posted = await postToX(text);
       // 前日ぶんを投稿した場合もその日の記録として残す（二重投稿を防ぐ）
       if (posted.ok) await redisCmd('SET', `xresult:${day}`, '1', 'EX', '172800');
