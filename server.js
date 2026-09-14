@@ -1581,6 +1581,10 @@ const MAX_MAIN     = 4;      // 本線の最大点数
 const MAX_ANA      = 2;      // 穴の最大点数
 const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
 
+// ホーム場。開催していればこの場のレースを優先して投稿する。
+// URLに &home=04,21 を付けて一時的に変えられる（&home=none で優先なし）
+const HOME_JCDS = ['04'];    // 04=平和島
+
 // 両プロンプト（BOT側・アプリ側）で同じ出力形式にする。
 // 共有キャッシュを双方で使い回すため、形式がずれると片方が壊れる
 const EV_PROMPT_RULES = `【重要・予想の方針】
@@ -2065,6 +2069,13 @@ app.all('/api/auto-post', async (req, res) => {
     )));
     timing.schedules = Date.now() - tSched;
 
+    // ホーム場（既定は平和島）が開催していれば、その場のレースを先に選ぶ。
+    // ホーム場に対象レースが無い時間帯は、従来どおり全場から締切の近い順に選ぶ
+    const homeParam = String(req.query.home || '').trim();
+    const homes = homeParam === 'none' ? []
+      : homeParam ? homeParam.split(',').map(v => v.trim().padStart(2, '0')).filter(Boolean)
+      : HOME_JCDS;
+
     // 締切が近い順に候補を並べ、未投稿の先頭1件を対象にする
     const cands = [];
     for (const { jcd, name, schedule } of scheds) {
@@ -2075,7 +2086,10 @@ app.all('/api/auto-post', async (req, res) => {
         if (lead >= minLead && lead <= maxLead) cands.push({ jcd, venue: name, rno: r.rno, time: r.time, lead });
       }
     }
-    cands.sort((a, b) => a.lead - b.lead);
+    // ホーム場を優先し、そのなかで締切の近い順。ホーム場以外は後回しにする
+    cands.sort((a, b) => (
+      (homes.includes(a.jcd) ? 0 : 1) - (homes.includes(b.jcd) ? 0 : 1) || a.lead - b.lead
+    ));
     if (!cands.length) return res.json({ ok: true, skipped: `締切${minLead}〜${maxLead}分前のレースなし`, timing });
 
     const tDedup = Date.now();
@@ -2085,7 +2099,8 @@ app.all('/api/auto-post', async (req, res) => {
       if (!done) { target = c; break; }
     }
     timing.dedup = Date.now() - tDedup;
-    if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', timing });
+    if (target) target.home = homes.includes(target.jcd);
+    if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', homes, timing });
 
     // X側が投稿を受け付けない状態（認証エラー・クレジット切れ）が分かっているときは、
     // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ
