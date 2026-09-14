@@ -127,7 +127,9 @@ app.use((req, res, next) => {
   return siteAuth(req, res, next);
 });
 
-app.use(express.json());
+// モーター評価表の画像取り込みで数百KB〜数MBのbase64を受けるため上限を上げる
+// （Vercelの受信上限は4.5MBなので、それを超えない範囲にとどめる）
+app.use(express.json({ limit: '4mb' }));
 // index.html と sw.js はブラウザにキャッシュさせない（バージョン更新を確実に届けるため）
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filePath) => {
@@ -1020,15 +1022,37 @@ const MOTOR_GRADES = ['SS', 'S', 'A+', 'A-', 'A', 'B+', 'B-', 'B', 'C+', 'C-', '
 // 出足・伸びの記号。サイトによって ◉ や ◆ なども使われるので広めに取る
 const MARK_RE = /^[◎◉⦿○◯●◍▲△▼▽■□◆◇☆★✕✖×☓＋+－ー–—-]$/;
 
+// 1行ぶんの妥当性を確認して整える。読めない値は null を返し、呼び出し側で件数に数える
+function normalizeMotorRow(r) {
+  const motorNo = parseInt(String(r.motorNo ?? r.no ?? '').replace(/[^\d]/g, ''));
+  if (!Number.isInteger(motorNo) || motorNo < 1 || motorNo > 999) return null;
+  const grade = String(r.grade ?? '').trim().toUpperCase().replace(/[＋]/g, '+').replace(/[－ー]/g, '-');
+  if (!MOTOR_GRADES.includes(grade)) return null;
+  const deashi = String(r.deashi ?? '').trim();
+  const nobi   = String(r.nobi ?? '').trim();
+  const rate2  = parseFloat(String(r.motor2Rate ?? r.rate2 ?? '').replace(/[^\d.]/g, ''));
+  return {
+    motorNo: String(motorNo),
+    grade,
+    deashi: MARK_RE.test(deashi) ? deashi : '',
+    nobi:   MARK_RE.test(nobi)   ? nobi   : '',
+    motor2Rate: Number.isFinite(rate2) ? rate2 : null,
+    racerName: String(r.racerName ?? r.racer ?? '').trim().slice(0, 50),
+    note: String(r.note ?? '').trim().slice(0, 200),
+  };
+}
+
 function parseMotorTable(text) {
   const rows = [], errors = [];
   // 評価は長いものから順に試す（A+ を A と誤認しないため）
   const gradeAlt = MOTOR_GRADES.slice().sort((a, b) => b.length - a.length)
     .map(g => g.replace(/[+]/g, '\\+')).join('|');
+  // 順位・前検タイム・優出/優勝は列が無い表もあるので任意にする。
+  // 機番・登番/氏名・2連率・評価・出足・伸びが揃っている行だけを取り込む
   const lineRe = new RegExp(
-    '^\\s*(\\d{1,3})\\s+(\\d{1,3})\\s+(\\d{3,5})\\s+(.+?)\\s*[（(](A1|A2|B1|B2)[）)]\\s+' +   // 順位 機番 登番 氏名 (級別)
-    '([\\d.]+)\\s+([\\d.]+)\\s*%\\s+(\\d+)\\s+(\\d+)\\s+' +                                  // 前検タイム 2連率 優出 優勝
-    '(' + gradeAlt + ')\\s+(\\S)\\s+(\\S)\\s*(.*)$');                                                // 評価 出足 伸び 短評
+    '^\\s*(?:(\\d{1,3})\\s+)?(\\d{1,3})\\s+(\\d{3,5})\\s+(.+?)\\s*[（(](A1|A2|B1|B2)[）)]\\s+' +  // [順位] 機番 登番 氏名 (級別)
+    '(?:([\\d.]+)\\s+)?([\\d.]+)\\s*%\\s+(?:(\\d+)\\s+(\\d+)\\s+)?' +                             // [前検タイム] 2連率 [優出 優勝]
+    '(' + gradeAlt + ')\\s+(\\S)\\s+(\\S)\\s*(.*)$');                                                     // 評価 出足 伸び 短評
 
   for (const raw of String(text || '').split(/\r?\n/)) {
     // 全角の空白とタブを半角スペースに寄せてから判定する
@@ -1055,30 +1079,166 @@ function parseMotorTable(text) {
   return { rows: [...uniq.values()], errors };
 }
 
+// モーター評価の公式ページ。場ごとに増やせるようにしておく
+const MOTOR_SOURCES = {
+  '04': 'https://www.heiwajima.gr.jp/01motor/motor_assessment.htm',   // 平和島
+};
+
+// 古い日本語サイトは Shift_JIS のことがあるので、文字コードを見てから読む
+function decodeHtml(buf, contentType) {
+  const head = Buffer.from(buf).subarray(0, 4096).toString('latin1');
+  const hit = (contentType || '').match(/charset=["']?([\w-]+)/i)
+           || head.match(/<meta[^>]+charset=["']?([\w-]+)/i)
+           || head.match(/charset=["']?([\w-]+)/i);
+  let enc = (hit ? hit[1] : 'utf-8').toLowerCase();
+  if (/^(shift[-_]?jis|sjis|x-sjis|windows-31j|ms932|cp932)$/.test(enc)) enc = 'shift_jis';
+  else if (/^euc[-_]?jp$/.test(enc)) enc = 'euc-jp';
+  try { return { text: new TextDecoder(enc).decode(buf), charset: enc }; }
+  catch { return { text: new TextDecoder('utf-8').decode(buf), charset: `${enc}→utf-8(代替)` }; }
+}
+
+// 公式ページを取得して表の各行をタブ区切りに直し、貼り付けと同じパーサーに通す。
+// 表の構造が変わって読めなくなったときのために、生の行も返す
+async function fetchMotorAssessment(jcd, budgetMs = 15000) {
+  const url = MOTOR_SOURCES[jcd];
+  if (!url) return { ok: false, error: `${VENUES[jcd] || jcd} は取得先が未登録です`, unsupported: true };
+  const c = new AbortController();
+  const timer = setTimeout(() => c.abort(), budgetMs);
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept-Language': 'ja,en;q=0.9' }, signal: c.signal });
+    clearTimeout(timer);
+    if (!r.ok) return { ok: false, error: `取得に失敗しました (HTTP ${r.status})`, url };
+    const { text, charset } = decodeHtml(await r.arrayBuffer(), r.headers.get('content-type'));
+    const $ = cheerio.load(text);
+    const lines = [];
+    $('tr').each((_, tr) => {
+      const cells = $(tr).find('td,th').map((__, td) => $(td).text().replace(/\s+/g, ' ').trim()).get();
+      if (cells.length >= 5) lines.push(cells.join('\t'));
+    });
+    const { rows, errors } = parseMotorTable(lines.join('\n'));
+    return { ok: true, url, charset, lineCount: lines.length, lines, rows, errors };
+  } catch (e) {
+    clearTimeout(timer);
+    return { ok: false, error: e.name === 'AbortError' ? `タイムアウトしました(${budgetMs}ms)` : e.message, url };
+  }
+}
+
+// 取り込んだ行を保存する（貼り付け・画像・公式取得で共通）
+async function saveMotorRows(jcd, rows, by, src) {
+  const args = ['HSET', `motors:${jcd}`];
+  const at = new Date().toISOString();
+  for (const r of rows) {
+    args.push(r.motorNo, JSON.stringify({
+      grade: r.grade, note: r.note, racerName: r.racerName, motor2Rate: r.motor2Rate,
+      deashi: r.deashi, nobi: r.nobi, by: String(by || '').slice(0, 12), src, updatedAt: at,
+    }));
+  }
+  return redisRaw(args, 8000);
+}
+
+// 公式ページからの取り込み。dryRun=1 なら保存せず結果だけ返す。
+// debug=1 で表の生の行も返す（構造が変わって読めなくなったときの調査用）
+app.all('/api/motors/fetch', async (req, res) => {
+  const jcd = String(req.query.jcd || req.body?.jcd || '');
+  if (!VENUES[jcd]) return res.status(400).json({ error: '無効な場コード' });
+  const dryRun = req.query.dryRun === '1' || req.body?.dryRun === true;
+  const debug  = req.query.debug === '1';
+
+  const got = await fetchMotorAssessment(jcd);
+  if (!got.ok) return res.status(got.unsupported ? 400 : 502).json({ error: got.error, url: got.url, sources: Object.keys(MOTOR_SOURCES).map(k => `${k}=${VENUES[k]}`) });
+
+  const base = {
+    venue: VENUES[jcd], url: got.url, charset: got.charset,
+    tableRows: got.lineCount, parsed: got.rows.length, skipped: got.errors.length,
+  };
+  if (debug) base.sample = got.lines.slice(0, 8);
+  if (!got.rows.length) {
+    return res.status(502).json({ ...base, error: '表として読み取れませんでした', hint: 'debug=1 を付けると読み取った行を確認できます', sample: got.lines.slice(0, 8) });
+  }
+  if (dryRun) return res.json({ ok: true, dryRun: true, ...base, rows: got.rows });
+
+  const w = await saveMotorRows(jcd, got.rows, req.body?.by || '公式取得', 'official');
+  if (!w.ok) return res.status(500).json({ ...base, error: '保存に失敗しました', detail: w.error || `HTTP ${w.status}` });
+  res.json({ ok: true, ...base, saved: got.rows.length, rows: got.rows, shared: REDIS_ENABLED });
+});
+
+// 画像からの取り込み。表のスクリーンショットしか無い場合に使う。
+// 読み取り結果は保存せず返すだけで、確認したうえで /api/motors/bulk に rows を渡して保存する。
+// OCRは読み違えるので、人が目で確かめる手順を必ず挟む
+const OCR_PROMPT = `この画像はボートレースのモーター評価表です。各行を読み取り、JSONのみで回答してください。
+
+{"rows":[{"motorNo":23,"rate2":50.0,"grade":"A-","deashi":"▲","nobi":"○","racer":"藤原 駿(B2)","note":"短評をそのまま"}]}
+
+- motorNo は「機番」列の数字。順位の列と取り違えないこと
+- grade は「評価」列（SS/S/A+/A/A-/B+/B/B-/C/D のいずれか）
+- deashi は「出足」列、nobi は「伸び」列の記号をそのまま（◎ ◉ ○ ▲ △ など）
+- rate2 は「2連率」の数字（%は除く）
+- note は「短評」列の文字。画像で切れている部分は無理に補わず、読める範囲だけ
+- 読み取れない行は含めないこと。推測で埋めないこと`;
+
+app.post('/api/motors/ocr', async (req, res) => {
+  const { jcd, images } = req.body || {};
+  if (!jcd || !VENUES[jcd]) return res.status(400).json({ error: '無効な場コード' });
+  const list = Array.isArray(images) ? images : (images ? [images] : []);
+  if (!list.length) return res.status(400).json({ error: '画像が必要です' });
+  if (list.length > 4) return res.status(400).json({ error: '画像は4枚までです' });
+
+  // data URL から MIME と base64 を取り出す
+  const parts = [{ text: OCR_PROMPT }];
+  let bytes = 0;
+  for (const img of list) {
+    const m = String(img || '').match(/^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=]+)$/);
+    if (!m) return res.status(400).json({ error: '画像の形式が不正です（PNG/JPEG/WEBP）' });
+    bytes += m[2].length * 3 / 4;
+    parts.push({ inline_data: { mime_type: m[1], data: m[2] } });
+  }
+  if (bytes > 3.5 * 1024 * 1024) return res.status(400).json({ error: '画像が大きすぎます。枚数を減らすか縮小してください' });
+
+  const g = await callGemini(parts, 40000);
+  if (!g.ok) return res.status(g.status || 500).json(g.body || { error: '画像の読み取りに失敗しました' });
+
+  let raw;
+  try { raw = JSON.parse(g.jsonText); } catch { return res.status(500).json({ error: '読み取り結果を解析できませんでした' }); }
+  const src = Array.isArray(raw) ? raw : (raw.rows || []);
+  const rows = [], skipped = [];
+  const seen = new Set();
+  for (const r of src) {
+    const v = normalizeMotorRow(r);
+    if (!v) { skipped.push(JSON.stringify(r).slice(0, 60)); continue; }
+    if (seen.has(v.motorNo)) continue;   // 同じ機番が複数枚に写っていれば先勝ち
+    seen.add(v.motorNo);
+    rows.push(v);
+  }
+  if (!rows.length) return res.status(400).json({ error: '表として読み取れませんでした', hint: '表がはっきり写っている画像にしてください', errors: skipped.slice(0, 5) });
+  res.json({ ok: true, venue: VENUES[jcd], parsed: rows.length, rows, skipped: skipped.length, model: g.model, images: list.length });
+});
+
 // 貼り付け一括取り込み。dryRun=true なら保存せず解析結果だけ返す
 app.post('/api/motors/bulk', async (req, res) => {
-  const { jcd, text, dryRun, by } = req.body || {};
+  const { jcd, text, rows: given, dryRun, by } = req.body || {};
   if (!jcd || !VENUES[jcd]) return res.status(400).json({ error: '無効な場コード' });
-  if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text が必要です' });
-  if (text.length > 60000) return res.status(400).json({ error: 'テキストが長すぎます' });
+  // text（貼り付け）か rows（画像読み取り後に確認済み）のどちらかを受け取る
+  if (!Array.isArray(given)) {
+    if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text または rows が必要です' });
+    if (text.length > 60000) return res.status(400).json({ error: 'テキストが長すぎます' });
+  } else if (given.length > 200) {
+    return res.status(400).json({ error: 'rows が多すぎます' });
+  }
 
-  const { rows, errors } = parseMotorTable(text);
+  const { rows, errors } = Array.isArray(given)
+    ? (() => {
+        const ok = [], ng = [];
+        for (const r of given) { const v = normalizeMotorRow(r); if (v) ok.push(v); else ng.push(JSON.stringify(r).slice(0, 60)); }
+        return { rows: ok, errors: ng };
+      })()
+    : parseMotorTable(text);
   if (!rows.length) {
     return res.status(400).json({ error: '表として読み取れませんでした', hint: '表をそのまま選択してコピーし、貼り付けてください', errors: errors.slice(0, 5) });
   }
   if (dryRun) return res.json({ ok: true, dryRun: true, venue: VENUES[jcd], parsed: rows.length, rows, skipped: errors.length, errors: errors.slice(0, 5) });
 
   try {
-    // HSET は複数フィールドをまとめて書ける。1レースぶんの実行時間に収めるため1回で送る
-    const args = ['HSET', `motors:${jcd}`];
-    const at = new Date().toISOString();
-    for (const r of rows) {
-      args.push(r.motorNo, JSON.stringify({
-        grade: r.grade, note: r.note, racerName: r.racerName, motor2Rate: r.motor2Rate,
-        deashi: r.deashi, nobi: r.nobi, by: String(by || '').slice(0, 12), src: 'paste', updatedAt: at,
-      }));
-    }
-    const r = await redisRaw(args, 8000);
+    const r = await saveMotorRows(jcd, rows, by, Array.isArray(given) ? 'image' : 'paste');
     if (!r.ok) return res.status(500).json({ error: '保存に失敗しました', detail: r.error || `HTTP ${r.status}`, shared: REDIS_ENABLED });
     res.json({ ok: true, venue: VENUES[jcd], saved: rows.length, skipped: errors.length, errors: errors.slice(0, 5), shared: REDIS_ENABLED });
   } catch (e) {
@@ -1364,6 +1524,7 @@ app.get('/api/predict-shared', async (req, res) => {
 // Gemini呼び出し（モデル自動フォールバック付き）
 // 成功: { ok:true, jsonText, model } / 失敗: { ok:false, status, body }
 // budgetMs は全モデル試行の合計上限（Vercelの30秒制限内に収めるため）
+// prompt には文字列のほか、画像を含む parts 配列（Gemini の contents.parts）も渡せる
 async function callGemini(prompt, budgetMs = 26000) {
   if (!GEMINI_API_KEY) {
     return { ok: false, status: 500, body: { error: 'サーバーに GEMINI_API_KEY が設定されていません' } };
@@ -1392,7 +1553,10 @@ async function callGemini(prompt, budgetMs = 26000) {
         response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig }),
+          body: JSON.stringify({
+            contents: [{ parts: Array.isArray(prompt) ? prompt : [{ text: prompt }] }],
+            generationConfig,
+          }),
           signal: controller.signal,
         });
         clearTimeout(timer);
@@ -2051,12 +2215,28 @@ app.all('/api/auto-post', async (req, res) => {
   const tEnd = Date.now() + 55000;
   const timing = { redis: REDIS_ENABLED };
   const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
-  const mode = req.query.mode === 'results' ? 'results' : 'races';
+  const mode = req.query.mode === 'results' ? 'results'
+             : req.query.mode === 'motors'  ? 'motors'
+             : 'races';
   const jst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
   const hd = `${jst.getFullYear()}${String(jst.getMonth() + 1).padStart(2, '0')}${String(jst.getDate()).padStart(2, '0')}`;
   const nowMin = jst.getHours() * 60 + jst.getMinutes();
 
   try {
+    // mode=motors: 公式ページのモーター評価を取り込む（1日1回の実行を想定）
+    if (mode === 'motors') {
+      const out = [];
+      for (const jcd of Object.keys(MOTOR_SOURCES)) {
+        const got = await fetchMotorAssessment(jcd, 15000);
+        if (!got.ok) { out.push({ venue: VENUES[jcd], error: got.error }); continue; }
+        if (!got.rows.length) { out.push({ venue: VENUES[jcd], error: '表として読み取れませんでした', tableRows: got.lineCount }); continue; }
+        if (dryRun) { out.push({ venue: VENUES[jcd], parsed: got.rows.length, skipped: got.errors.length, charset: got.charset }); continue; }
+        const w = await saveMotorRows(jcd, got.rows, 'cron', 'official');
+        out.push({ venue: VENUES[jcd], saved: w.ok ? got.rows.length : 0, skipped: got.errors.length, charset: got.charset, error: w.ok ? undefined : (w.error || `HTTP ${w.status}`) });
+      }
+      return res.json({ ok: out.some(o => o.saved || o.parsed), dryRun: dryRun || undefined, results: out });
+    }
+
     if (mode === 'results') {
       // 対象日を決める。定期実行は数時間遅れることがあり、23:30の枠が日付をまたいで
       // 起動すると当日ぶんを取り逃すため、当日に投稿がなければ前日ぶんを見る

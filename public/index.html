@@ -525,7 +525,8 @@ input,select{font-family:var(--sans);}
     <button class="ml-filter" data-f="C" onclick="setMLFilter('C',this)" style="color:var(--orange)">C</button>
     <button class="ml-filter" data-f="D" onclick="setMLFilter('D',this)" style="color:var(--red)">D</button>
     <button class="ml-filter" data-f="-" onclick="setMLFilter('-',this)">未評価</button>
-    <button class="ml-filter" onclick="toggleMotorPaste()" style="margin-left:auto;color:var(--gold)">📋 表を取込</button>
+    <button class="ml-filter" id="mlFetchBtn" onclick="fetchOfficialMotors()" style="margin-left:auto;color:var(--accent2)">🌐 公式から取得</button>
+    <button class="ml-filter" onclick="toggleMotorPaste()" style="color:var(--gold)">📋 表を取込</button>
   </div>
   <div id="mlPaste" style="display:none;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">
     <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5">
@@ -545,7 +546,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.31';
+const APP_VERSION = 'v3.32';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -689,6 +690,44 @@ async function showMotorList() {
 
 function closeMotorList() {
   document.getElementById('motorListModal').classList.remove('open');
+}
+
+// 公式サイトのモーター評価ページから直接取り込む（対応している場のみ）
+async function fetchOfficialMotors() {
+  const btn = document.getElementById('mlFetchBtn');
+  const msg = document.getElementById('mlPasteMsg');
+  document.getElementById('mlPaste').style.display = 'block';
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = '取得中...';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = `${VENUE_NAME}の公式ページから取得しています...`;
+  try {
+    const res = await fetch(`${SERVER_URL}/api/motors/fetch?jcd=${VENUE_JCD}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ by: getNickname() }),
+      signal: AbortSignal.timeout(25000),
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      msg.style.color = 'var(--orange)';
+      msg.textContent = `${d.error || '取得できませんでした'}\n貼り付けでの取り込みは使えます`;
+      return;
+    }
+    msg.style.color = 'var(--accent2)';
+    msg.textContent = `公式ページから${d.saved}件を取り込みました${d.skipped ? `（${d.skipped}行は読めず）` : ''}`;
+    await syncMotors();
+    const r2 = await fetch(`${SERVER_URL}/api/motors?jcd=${VENUE_JCD}`);
+    if (r2.ok) sharedMotors = await r2.json();
+    renderMotorList();
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '通信に失敗しました: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 function toggleMotorPaste() {
