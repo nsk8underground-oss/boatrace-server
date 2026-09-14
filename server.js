@@ -1575,7 +1575,10 @@ app.get('/api/x-health', async (req, res) => {
 const EV_MIN_MAIN  = 1.05;   // 本線に採用する最低期待値
 const EV_MIN_ANA   = 1.20;   // 穴は当たりが薄くブレるので高めに要求する
 const ANA_MIN_ODDS = 30;     // これ以上を穴として扱う
-const MAX_POINTS   = 8;      // 1セクションの最大点数
+// 買い目は多いほど期待値の合計は増えるが、読み手が実際に買える点数でないと意味がない。
+// 「点数が多い」という指摘を受けて、期待値の高い順に本線4点・穴2点の計6点(¥600)までに絞る
+const MAX_MAIN     = 4;      // 本線の最大点数
+const MAX_ANA      = 2;      // 穴の最大点数
 const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
 
 // 両プロンプト（BOT側・アプリ側）で同じ出力形式にする。
@@ -1669,17 +1672,19 @@ function applyEV(pred, odds3t) {
     // 期待値が基準を超えた買い目だけを採用する。
     // そのうち当たりやすい順に本線、残りの高配当 side を穴として足す
     const qual = usable.filter(r => r.ev >= EV_MIN_MAIN);
-    main = qual.slice().sort(byP).slice(0, MAX_POINTS);
+    // 期待値で絞ったうえで、そのなかで当たりやすい順に本線を採る。
+    // 期待値順で採ると本線が最も人気薄の並びばかりになり、穴との区別がなくなるため
+    main = qual.slice().sort(byP).slice(0, MAX_MAIN);
     const inMain = new Set(main.map(r => r.combo));
     ana = qual.filter(r => !inMain.has(r.combo) && r.odds >= ANA_MIN_ODDS && r.ev >= EV_MIN_ANA)
-              .sort(byEV).slice(0, MAX_POINTS);
+              .sort(byEV).slice(0, MAX_ANA);
     pred.ev_mode = 'ev';
   } else {
     // オッズが取れなかった / 確率が信用できないときは期待値を出せない。
     // 確率順に並べるだけにとどめ、期待値は表示しない
     const sorted = rows.slice().sort(byP);
-    main = sorted.slice(0, MAX_POINTS);
-    ana  = sorted.slice(MAX_POINTS, MAX_POINTS * 2);
+    main = sorted.slice(0, MAX_MAIN);
+    ana  = sorted.slice(MAX_MAIN, MAX_MAIN + MAX_ANA);
     pred.ev_mode = unreliable ? 'unreliable' : 'noodds';
   }
 
@@ -1877,8 +1882,10 @@ function buildRaceTweet(venue, rno, closeTime, pred) {
   // 期待値1.0超えが1点も無いレースは買い目を出さない。
   // 無理に買うことが回収率を下げるいちばんの原因なので、見送りをそのまま伝える
   const skip = pred.ev_skip && !allM.length && !allA.length;
+  // 何点でいくら必要かを明記する。読み手が実際に買える規模かどうかが分かるように
+  const cost = n => (n ? ` 計${n}点¥${n * 100}` : '');
   const render = (nm, na) => [
-    `🚤${venue} ${rno}R 締切${closeTime}`,
+    `🚤${venue} ${rno}R 締切${closeTime}${cost(nm + na)}`,
     skip ? '⚠️見送り\n人気サイドに配当が偏り、期待値1.0を超える買い目がありません' : '',
     block('◎本線', mc, pred.ev_main, allM.slice(0, nm)),
     block('★穴', ac, pred.ev_ana, allA.slice(0, na)),
