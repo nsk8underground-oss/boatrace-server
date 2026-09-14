@@ -525,6 +525,19 @@ input,select{font-family:var(--sans);}
     <button class="ml-filter" data-f="C" onclick="setMLFilter('C',this)" style="color:var(--orange)">C</button>
     <button class="ml-filter" data-f="D" onclick="setMLFilter('D',this)" style="color:var(--red)">D</button>
     <button class="ml-filter" data-f="-" onclick="setMLFilter('-',this)">未評価</button>
+    <button class="ml-filter" onclick="toggleMotorPaste()" style="margin-left:auto;color:var(--gold)">📋 表を取込</button>
+  </div>
+  <div id="mlPaste" style="display:none;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5">
+      モーター評価表を<b>そのまま選択してコピー</b>し、ここに貼り付けてください。<br>
+      機番・2連率・評価・出足・伸び・短評を読み取り、AI予想の判断材料に使います。
+    </div>
+    <textarea id="mlPasteText" rows="4" placeholder="順位 機番 今節使用者 前検タイム 2連率 …" style="width:100%;box-sizing:border-box;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:11px;font-family:var(--mono)"></textarea>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button class="exhibit-btn" style="flex:1" onclick="importMotorTable(true)">確認</button>
+      <button class="exhibit-btn" style="flex:1;border-color:var(--accent2);color:var(--accent2)" onclick="importMotorTable(false)">取り込む</button>
+    </div>
+    <div id="mlPasteMsg" style="font-size:10px;font-family:var(--mono);margin-top:6px;white-space:pre-wrap"></div>
   </div>
   <div class="ml-body" id="mlBody"></div>
 </div>
@@ -532,7 +545,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.29';
+const APP_VERSION = 'v3.31';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -658,8 +671,9 @@ async function syncMotors() {
   } catch {}
 }
 /* ======================== MOTOR LIST MODAL ======================== */
-const GRADE_ORDER = { 'S': 0, 'A': 1, 'B': 2, 'C': 3, 'D': 4, '': 5 };
-const GRADE_COLOR = { 'S': 'var(--accent2)', 'A': 'var(--accent2)', 'B': 'var(--gold)', 'C': 'var(--orange)', 'D': 'var(--red)', '': 'var(--muted)' };
+// 貼り付け取り込みでは SS / A+ / A- / B+ などの細かい評価も入る
+const GRADE_ORDER = { 'SS': -1, 'S': 0, 'A+': 0.5, 'A': 1, 'A-': 1.5, 'B+': 1.8, 'B': 2, 'B-': 2.5, 'C+': 2.8, 'C': 3, 'C-': 3.5, 'D': 4, 'E': 4.5, '': 5 };
+const GRADE_COLOR = { 'SS': 'var(--accent2)', 'S': 'var(--accent2)', 'A+': 'var(--accent2)', 'A': 'var(--accent2)', 'A-': 'var(--accent2)', 'B+': 'var(--gold)', 'B': 'var(--gold)', 'B-': 'var(--gold)', 'C+': 'var(--orange)', 'C': 'var(--orange)', 'C-': 'var(--orange)', 'D': 'var(--red)', 'E': 'var(--red)', '': 'var(--muted)' };
 let mlFilter = 'ALL';
 
 async function showMotorList() {
@@ -677,6 +691,53 @@ function closeMotorList() {
   document.getElementById('motorListModal').classList.remove('open');
 }
 
+function toggleMotorPaste() {
+  const el = document.getElementById('mlPaste');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  if (el.style.display === 'block') document.getElementById('mlPasteText').focus();
+}
+
+// 貼り付けたモーター評価表をサーバーで解析して取り込む。
+// preview=true なら保存せず、何件読めたかだけ確認する
+async function importMotorTable(preview) {
+  const text = document.getElementById('mlPasteText').value;
+  const msg  = document.getElementById('mlPasteMsg');
+  if (!text.trim()) { msg.style.color = 'var(--orange)'; msg.textContent = '貼り付けてから押してください'; return; }
+  msg.style.color = 'var(--muted)';
+  msg.textContent = '解析中...';
+  try {
+    const res = await fetch(`${SERVER_URL}/api/motors/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jcd: VENUE_JCD, text, dryRun: !!preview, by: getNickname() }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      msg.style.color = 'var(--red)';
+      msg.textContent = `${d.error || '取り込めませんでした'}${d.hint ? '\n' + d.hint : ''}`;
+      return;
+    }
+    if (preview) {
+      const sample = (d.rows || []).slice(0, 3)
+        .map(r => `機番${r.motorNo} ${r.grade} 出足${r.deashi} 伸び${r.nobi}`).join(' / ');
+      msg.style.color = 'var(--accent2)';
+      msg.textContent = `${d.parsed}件を読み取りました${d.skipped ? `（${d.skipped}行は読めず）` : ''}\n${sample}${d.parsed > 3 ? ' ...' : ''}\n問題なければ「取り込む」を押してください`;
+      return;
+    }
+    msg.style.color = 'var(--accent2)';
+    msg.textContent = `${d.saved}件を取り込みました${d.skipped ? `（${d.skipped}行は読めず）` : ''}${d.shared ? '' : '\n※共有保存は無効（Redis未設定）'}`;
+    document.getElementById('mlPasteText').value = '';
+    await syncMotors();
+    const r2 = await fetch(`${SERVER_URL}/api/motors?jcd=${VENUE_JCD}`);
+    if (r2.ok) sharedMotors = await r2.json();
+    renderMotorList();
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '通信に失敗しました: ' + (e.message || e);
+  }
+}
+
 function setMLFilter(f, btn) {
   mlFilter = f;
   document.querySelectorAll('.ml-filter').forEach(b => b.classList.remove('on'));
@@ -692,7 +753,7 @@ function renderMotorList() {
 
   const filtered = mlFilter === 'ALL' ? entries
     : mlFilter === '-' ? entries.filter(e => !e.grade)
-    : entries.filter(e => e.grade === mlFilter);
+    : entries.filter(e => (e.grade || '').startsWith(mlFilter));   // A を選ぶと A+ / A- も含める
 
   document.getElementById('mlCount').textContent = `${filtered.length} / ${entries.length} 件`;
 

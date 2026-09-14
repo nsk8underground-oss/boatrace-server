@@ -1014,6 +1014,78 @@ app.get('/api/motors', async (req, res) => {
   }
 });
 
+// モーター評価表（順位/機番/使用者/前検タイム/2連率/優出/優勝/評価/出足/伸び/短評）を
+// 貼り付けから取り込む。列がタブ区切りでも空白区切りでも読めるようにしている
+const MOTOR_GRADES = ['SS', 'S', 'A+', 'A-', 'A', 'B+', 'B-', 'B', 'C+', 'C-', 'C', 'D', 'E'];
+// 出足・伸びの記号。サイトによって ◉ や ◆ なども使われるので広めに取る
+const MARK_RE = /^[◎◉⦿○◯●◍▲△▼▽■□◆◇☆★✕✖×☓＋+－ー–—-]$/;
+
+function parseMotorTable(text) {
+  const rows = [], errors = [];
+  // 評価は長いものから順に試す（A+ を A と誤認しないため）
+  const gradeAlt = MOTOR_GRADES.slice().sort((a, b) => b.length - a.length)
+    .map(g => g.replace(/[+]/g, '\\+')).join('|');
+  const lineRe = new RegExp(
+    '^\\s*(\\d{1,3})\\s+(\\d{1,3})\\s+(\\d{3,5})\\s+(.+?)\\s*[（(](A1|A2|B1|B2)[）)]\\s+' +   // 順位 機番 登番 氏名 (級別)
+    '([\\d.]+)\\s+([\\d.]+)\\s*%\\s+(\\d+)\\s+(\\d+)\\s+' +                                  // 前検タイム 2連率 優出 優勝
+    '(' + gradeAlt + ')\\s+(\\S)\\s+(\\S)\\s*(.*)$');                                                // 評価 出足 伸び 短評
+
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    // 全角の空白とタブを半角スペースに寄せてから判定する
+    const line = raw.replace(/[\t\u3000]+/g, ' ').replace(/\s+$/, '');
+    if (!line.trim()) continue;
+    if (/順位|機番|おかぺん|今節使用者/.test(line)) continue;   // 見出し行
+    const m = line.match(lineRe);
+    if (!m) { errors.push(line.slice(0, 60)); continue; }
+    const [, , motorNo, , name, cls, , rate2, , , grade, deashi, nobi, note] = m;
+    if (!MARK_RE.test(deashi) || !MARK_RE.test(nobi)) { errors.push(line.slice(0, 60)); continue; }
+    rows.push({
+      motorNo: String(parseInt(motorNo)),
+      grade,
+      deashi,
+      nobi,
+      motor2Rate: parseFloat(rate2),
+      racerName: `${name.trim()}(${cls})`.slice(0, 50),
+      note: note.trim().slice(0, 200),
+    });
+  }
+  // 同じ機番が複数行あれば後勝ち
+  const uniq = new Map();
+  for (const r of rows) uniq.set(r.motorNo, r);
+  return { rows: [...uniq.values()], errors };
+}
+
+// 貼り付け一括取り込み。dryRun=true なら保存せず解析結果だけ返す
+app.post('/api/motors/bulk', async (req, res) => {
+  const { jcd, text, dryRun, by } = req.body || {};
+  if (!jcd || !VENUES[jcd]) return res.status(400).json({ error: '無効な場コード' });
+  if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text が必要です' });
+  if (text.length > 60000) return res.status(400).json({ error: 'テキストが長すぎます' });
+
+  const { rows, errors } = parseMotorTable(text);
+  if (!rows.length) {
+    return res.status(400).json({ error: '表として読み取れませんでした', hint: '表をそのまま選択してコピーし、貼り付けてください', errors: errors.slice(0, 5) });
+  }
+  if (dryRun) return res.json({ ok: true, dryRun: true, venue: VENUES[jcd], parsed: rows.length, rows, skipped: errors.length, errors: errors.slice(0, 5) });
+
+  try {
+    // HSET は複数フィールドをまとめて書ける。1レースぶんの実行時間に収めるため1回で送る
+    const args = ['HSET', `motors:${jcd}`];
+    const at = new Date().toISOString();
+    for (const r of rows) {
+      args.push(r.motorNo, JSON.stringify({
+        grade: r.grade, note: r.note, racerName: r.racerName, motor2Rate: r.motor2Rate,
+        deashi: r.deashi, nobi: r.nobi, by: String(by || '').slice(0, 12), src: 'paste', updatedAt: at,
+      }));
+    }
+    const r = await redisRaw(args, 8000);
+    if (!r.ok) return res.status(500).json({ error: '保存に失敗しました', detail: r.error || `HTTP ${r.status}`, shared: REDIS_ENABLED });
+    res.json({ ok: true, venue: VENUES[jcd], saved: rows.length, skipped: errors.length, errors: errors.slice(0, 5), shared: REDIS_ENABLED });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/motors', async (req, res) => {
   const { jcd, motorNo, grade, note, racerName, motor2Rate, by } = req.body;
   if (!jcd || !motorNo) return res.status(400).json({ error: 'jcd and motorNo required' });
@@ -1581,6 +1653,10 @@ const MAX_MAIN     = 4;      // 本線の最大点数
 const MAX_ANA      = 2;      // 穴の最大点数
 const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
 
+// ホーム場。開催していればこの場のレースを優先して投稿する。
+// URLに &home=04,21 を付けて一時的に変えられる（&home=none で優先なし）
+const HOME_JCDS = ['04'];    // 04=平和島
+
 // 両プロンプト（BOT側・アプリ側）で同じ出力形式にする。
 // 共有キャッシュを双方で使い回すため、形式がずれると片方が壊れる
 const EV_PROMPT_RULES = `【重要・予想の方針】
@@ -1608,11 +1684,22 @@ candsは3連単の候補を18〜24組。cは "艇番-艇番-艇番" 形式、p�
 p が 1 未満になるほど薄い組は入れないこと。同じ組を重複させないこと。
 堅い組だけを並べず、条件から見て起こりうる波乱の組も確率相応の p で入れること。`;
 
+// 取り込んだモーター評価（評価・出足・伸び・短評）をプロンプト1行ぶんに整える。
+// 評価が無いモーターは公式の2連率だけを渡す
+function motorLine(r) {
+  const mi = r.motorInfo || {};
+  const parts = [`${r.motorGrade || '未評価'}(2連${r.motor2Rate || 0}%)`];
+  if (mi.deashi) parts.push(`出足${mi.deashi}`);
+  if (mi.nobi)   parts.push(`伸び${mi.nobi}`);
+  if (mi.note)   parts.push(`短評:${String(mi.note).slice(0, 70)}`);
+  return parts.join(' ');
+}
+
 function buildAutoPrompt(venue, rno, racers, weather) {
   const lines = racers.map(r =>
     `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
     `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
-    `モーター:${r.motorGrade || '未評価'}(2連${r.motor2Rate || 0}%) ` +
+    `モーター:${motorLine(r)} ` +
     `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
   ).join('\n');
 
@@ -1752,6 +1839,7 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
     exhibitTime: before.exhibit[r.lane]?.exhibitTime ?? null,
     exhibitST: before.exhibit[r.lane]?.st ?? null,
     motorGrade: motors[r.motorNo]?.grade || '',
+    motorInfo: motors[r.motorNo] || null,
   }));
 
   const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {});
@@ -2065,6 +2153,13 @@ app.all('/api/auto-post', async (req, res) => {
     )));
     timing.schedules = Date.now() - tSched;
 
+    // ホーム場（既定は平和島）が開催していれば、その場のレースを先に選ぶ。
+    // ホーム場に対象レースが無い時間帯は、従来どおり全場から締切の近い順に選ぶ
+    const homeParam = String(req.query.home || '').trim();
+    const homes = homeParam === 'none' ? []
+      : homeParam ? homeParam.split(',').map(v => v.trim().padStart(2, '0')).filter(Boolean)
+      : HOME_JCDS;
+
     // 締切が近い順に候補を並べ、未投稿の先頭1件を対象にする
     const cands = [];
     for (const { jcd, name, schedule } of scheds) {
@@ -2075,7 +2170,10 @@ app.all('/api/auto-post', async (req, res) => {
         if (lead >= minLead && lead <= maxLead) cands.push({ jcd, venue: name, rno: r.rno, time: r.time, lead });
       }
     }
-    cands.sort((a, b) => a.lead - b.lead);
+    // ホーム場を優先し、そのなかで締切の近い順。ホーム場以外は後回しにする
+    cands.sort((a, b) => (
+      (homes.includes(a.jcd) ? 0 : 1) - (homes.includes(b.jcd) ? 0 : 1) || a.lead - b.lead
+    ));
     if (!cands.length) return res.json({ ok: true, skipped: `締切${minLead}〜${maxLead}分前のレースなし`, timing });
 
     const tDedup = Date.now();
@@ -2085,7 +2183,8 @@ app.all('/api/auto-post', async (req, res) => {
       if (!done) { target = c; break; }
     }
     timing.dedup = Date.now() - tDedup;
-    if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', timing });
+    if (target) target.home = homes.includes(target.jcd);
+    if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', homes, timing });
 
     // X側が投稿を受け付けない状態（認証エラー・クレジット切れ）が分かっているときは、
     // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ
