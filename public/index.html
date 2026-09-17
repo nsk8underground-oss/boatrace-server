@@ -546,7 +546,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.34';
+const APP_VERSION = 'v3.35';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -1811,7 +1811,7 @@ async function runPredict(auto = false) {
   const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
   // ex0/ex1: 展示タイム反映前後で別キー — 展示反映後は新しい予想に自動アップグレードされる
   const hasEx = raceData.racers.some(r => r.exhibitTime != null);
-  const cacheKey = `v5_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
+  const cacheKey = `v6_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
 
   let sharedData = null;
   if (auto) {
@@ -1844,10 +1844,13 @@ async function runPredict(auto = false) {
     const ex = loadExhibit(currentRace, r.lane);
     if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
     if (r.exhibitST   != null) ex.st          = r.exhibitST;
+    // 単勝オッズは渡さない（人気を見せると確率の見積もりが人気に引きずられる。BOT側と同じ方針）。
+    // 進入コースは展示が出ていれば確定値、まだなら「未定」
+    const course = hasEx && r.course ? r.course : '未定';
     return `${r.lane}号艇:${r.name||'不明'}(${r.cls||'—'}/${r.branch||'—'}) `+
       `全国${r.allRate||0}/当地${r.localRate||0}/2連${r.all2Rate||0}% F/L:${r.fl||'0/0'} avgST:${r.avgST||0.18} `+
-      `単勝:${r.odds!=null?r.odds.toFixed(1)+'倍':'不明'} モーター:${md.grade||'未評価'}(2連${r.motor2Rate||0}%) `+
-      `展示:${ex.exhibitTime||'不明'} 展示ST:${ex.st||'不明'} メモ:${md.note||'なし'}`;
+      `モーター:${md.grade||'未評価'}(2連${r.motor2Rate||0}%) `+
+      `コース:${course} 展示:${ex.exhibitTime||'不明'} 展示ST:${ex.st||'不明'} メモ:${md.note||'なし'}`;
   }).join('\n');
 
   const wAdv    = windAdvice[wind]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
@@ -1868,7 +1871,8 @@ async function runPredict(auto = false) {
   const prompt = `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
 【${VENUE_NAME} 第${currentRace}レース】
-天候:${weather.sky||'不明'} 風速:${weather.wind||'不明'}m/s 水温:${weather.water||'不明'}℃ 波高:${weather.wave||'不明'}cm
+天候:${weather.sky||'不明'} 風向:${weather.windDir||'不明'} 風速:${weather.wind||'不明'}m/s 水温:${weather.water||'不明'}℃ 波高:${weather.wave||'不明'}cm
+（コースは展示で確定した進入。「未定」は枠なり想定）
 選択条件 — 風向:${wind} / 潮位:${tide}
 ${fixLine}
 

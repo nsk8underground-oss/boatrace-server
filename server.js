@@ -797,7 +797,7 @@ app.get('/api/dashboard', async (req, res) => {
       // そのレースの共有予想があるか（展示反映後ex1を優先して確認）
       let shared = false;
       for (const ex of ['ex1', 'ex0']) {
-        if (await lookupSharedPredict(`v4_${jcd}_${hd}_${next.rno}_0_${ex}`)) { shared = true; break; }
+        if (await lookupSharedPredict(`v6_${jcd}_${hd}_${next.rno}_0_${ex}`)) { shared = true; break; }
       }
       const [h, m] = next.time.split(':').map(Number);
       return { jcd, name, status: 'open', nextRno: next.rno, nextTime: next.time, minsLeft: h * 60 + m - nowMin, shared };
@@ -1540,7 +1540,9 @@ async function callGemini(prompt, budgetMs = 26000) {
       if (budget < 3000) { lastTransient = true; break; }
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
       const generationConfig = {
-        temperature: 0.7,
+        // 確率の見積もりに使うので低めにする。0.7だと同じレースでも実行ごとに p がぶれ、
+        // 期待値の選定にノイズが乗る
+        temperature: 0.2,
         maxOutputTokens: 4096, // 候補20点前後+シナリオ2本。少なすぎるとJSONが途中で切れて全滅する
         responseMimeType: 'application/json',
       };
@@ -1635,12 +1637,14 @@ async function callGemini(prompt, budgetMs = 26000) {
   }
 }
 
-// 生成結果を共有キャッシュ（メモリ60分 + Redis 60分）に保存
-function storePredict(cacheKey, result) {
+// 生成結果を共有キャッシュ（メモリ60分 + Redis 60分）に保存。
+// Redis への書き込みは await する。応答を返したあとの非同期処理は Vercel で
+// 破棄されることがあり（getOpenVenues で実際に起きた）、共有予想が保存されない原因になる
+async function storePredict(cacheKey, result) {
   if (!cacheKey) return;
   for (const [k, v] of predictCache) if (Date.now() >= v.exp) predictCache.delete(k);
   predictCache.set(cacheKey, { data: result, exp: Date.now() + 3600000 });
-  redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '3600');
+  await redisCmd('SET', `predict:${cacheKey}`, JSON.stringify(result), 'EX', '3600');
 }
 
 // AI予想エンドポイント（Gemini）
@@ -1672,7 +1676,7 @@ app.post('/api/predict', async (req, res) => {
   let text = r.jsonText;
   try { text = JSON.stringify(applyEV(JSON.parse(r.jsonText), odds)); } catch {}
   const result = { content: [{ text }], model: r.model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
-  storePredict(cacheKey, result);
+  await storePredict(cacheKey, result);
   res.json(result);
 });
 
@@ -1867,13 +1871,16 @@ function buildAutoPrompt(venue, rno, racers, weather) {
     `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
     `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
     `モーター:${motorLine(r)} ` +
-    `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
+    `コース:${r.course ?? '未定'} 展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
   ).join('\n');
 
+  // 進入コース（スタート展示で確定）と風向は展開を最も左右する。
+  // 取れているのに渡さないと、展示待ちをした意味が半分無くなる
   return `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
 【${venue} 第${rno}レース】
-天候:${weather.sky || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm
+天候:${weather.sky || '不明'} 風向:${weather.windDir || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm
+（コースは展示で確定した進入。「未定」は枠なり想定）
 
 【出走表（boatrace.jp 実データ）】
 ${lines}
@@ -1989,8 +1996,8 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   // 展示タイム・展示STが出る前に予想を出すと、いちばん効く直前情報が抜けたまま固定される。
   // 締切まで間があるうちは投稿せず、次の実行で展示が出てから出す（Geminiも消費しない）
   if (opts.needExhibit && !hasEx) return { wait: '展示情報がまだ出ていません' };
-  // v5: 期待値ベースの選定に切り替えたため、v4 の古い形式は使い回さない
-  const cacheKey = `v5_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
+  // v6: 進入コース・風向をプロンプトに加えたため、それ以前の予想は使い回さない
+  const cacheKey = `v6_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
   const cached = await lookupSharedPredict(cacheKey);
   if (cached) {
     try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, schedule: rl.schedule }; } catch {}
@@ -2008,6 +2015,7 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
     odds: odds1[r.lane] ?? null,
     exhibitTime: before.exhibit[r.lane]?.exhibitTime ?? null,
     exhibitST: before.exhibit[r.lane]?.st ?? null,
+    course: before.exhibit[r.lane]?.course ?? null,
     motorGrade: motors[r.motorNo]?.grade || '',
     motorInfo: motors[r.motorNo] || null,
   }));
@@ -2021,7 +2029,7 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   try { pred = applyEV(JSON.parse(g.jsonText), odds3t); }
   catch { return { error: '予想の解析に失敗' }; }
   const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
-  storePredict(cacheKey, result);
+  await storePredict(cacheKey, result);
   return { pred, venue, cached: false, schedule: rl.schedule };
 }
 
@@ -2395,6 +2403,11 @@ app.all('/api/auto-post', async (req, res) => {
           target, timing,
         });
       }
+    }
+
+    // X の認証情報が無ければ投稿できないので、Gemini を消費する前に打ち切る
+    if (!dryRun && !X_ENABLED) {
+      return res.json({ ok: false, skipped: 'X認証情報が未設定のため予想生成を行いません', hint: '/api/x-health で設定状況を確認してください', target, timing });
     }
 
     // 残り時間が足りなければ投稿せず終了する（次回の実行で拾う）。
