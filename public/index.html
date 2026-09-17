@@ -548,7 +548,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.36';
+const APP_VERSION = 'v3.37';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -942,20 +942,25 @@ function buildHistory() {
   }
   const total = history.length;
   const judged = history.filter(h => h.hit === 'matoi' || h.hit === 'ana' || h.hit === 'none');
-  const hits   = judged.filter(h => h.hit === 'matoi' || h.hit === 'ana');
-  const matoiHits = judged.filter(h => h.hit === 'matoi').length;
-  const anaHits   = judged.filter(h => h.hit === 'ana').length;
-  const payout = history.reduce((s, h) => s + (h.payout || 0), 0);
-  const rate = judged.length ? Math.round(hits.length / judged.length * 100) : 0;
+  // 見送り（買い目なし）は買っていないので、的中率・回収率の母数から外す。
+  // 以前は点数0が「16点」に化けて、買っていないレースが外れとして回収率を下げていた
+  const nPts = h => (h.matoi || []).length + (h.ana || []).length;
+  const betJudged = judged.filter(h => nPts(h) > 0);
+  const skipped   = judged.length - betJudged.length;
+  const hits   = betJudged.filter(h => h.hit === 'matoi' || h.hit === 'ana');
+  const matoiHits = betJudged.filter(h => h.hit === 'matoi').length;
+  const anaHits   = betJudged.filter(h => h.hit === 'ana').length;
+  const payout = betJudged.reduce((s, h) => s + (h.payout || 0), 0);
+  const rate = betJudged.length ? Math.round(hits.length / betJudged.length * 100) : 0;
   // 回収率: 保存した買い目の実点数×100円を投資額とする（点数はレースごとに変わる）
-  const points = judged.reduce((s, h) => s + (((h.matoi||[]).length + (h.ana||[]).length) || 16), 0);
+  const points = betJudged.reduce((s, h) => s + nPts(h), 0);
   const invested = points * 100;
   const roi = invested ? Math.round(payout / invested * 100) : 0;
   const roiColor = roi >= 100 ? 'var(--accent2)' : roi >= 75 ? 'var(--gold)' : 'var(--red)';
   el.innerHTML = `
     <div class="hist-stats">
       <div class="hs-item"><div class="hs-lbl">総予想</div><div class="hs-val">${total}</div></div>
-      <div class="hs-item"><div class="hs-lbl">的中</div><div class="hs-val" style="color:var(--accent2)">${hits.length}/${judged.length}</div></div>
+      <div class="hs-item"><div class="hs-lbl">的中</div><div class="hs-val" style="color:var(--accent2)">${hits.length}/${betJudged.length}</div></div>
       <div class="hs-item"><div class="hs-lbl">的中率</div><div class="hs-val" style="color:var(--gold)">${rate}%</div></div>
       <div class="hs-item"><div class="hs-lbl">総払戻</div><div class="hs-val" style="color:var(--orange)">¥${payout.toLocaleString()}</div></div>
     </div>
@@ -967,13 +972,14 @@ function buildHistory() {
           <div style="font-size:9px;color:var(--muted);font-family:var(--mono)">投資¥${invested.toLocaleString()} → 回収¥${payout.toLocaleString()}</div>
         </div>
       </div>
-      <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:6px">内訳: ◎本線${matoiHits}回 / ★穴${anaHits}回${judged.length < total ? ` ・ 未確認${total - judged.length}件` : ''}</div>
+      <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:6px">内訳: ◎本線${matoiHits}回 / ★穴${anaHits}回${skipped ? ` ・ 見送り${skipped}件` : ''}${judged.length < total ? ` ・ 未確認${total - judged.length}件` : ''}</div>
     </div>
     <div style="margin:0 14px 8px"><button class="exhibit-btn" style="width:100%" onclick="autoCheckResults()">🔄 未確認の結果を一括照合</button></div>
     ${history.map(h => {
       const d = h.hd ? `${h.hd.slice(4,6)}/${h.hd.slice(6,8)}` : '';
-      const hitCls = h.hit === 'matoi' || h.hit === 'ana' ? 'hit' : h.hit === 'none' ? 'miss' : '';
-      const hitTxt = h.hit === 'matoi' ? '◎的中' : h.hit === 'ana' ? '★的中' : h.hit === 'none' ? '❌ハズレ' : '⊙未確認';
+      const hitCls = ((h.matoi||[]).length + (h.ana||[]).length) === 0 ? '' : h.hit === 'matoi' || h.hit === 'ana' ? 'hit' : h.hit === 'none' ? 'miss' : '';
+      const noBet  = ((h.matoi||[]).length + (h.ana||[]).length) === 0;
+      const hitTxt = noBet ? '⊘見送り' : h.hit === 'matoi' ? '◎的中' : h.hit === 'ana' ? '★的中' : h.hit === 'none' ? '❌ハズレ' : '⊙未確認';
       const resultLine = h.result ? `<div style="font-size:11px;padding:2px 12px;font-family:var(--mono)"><span style="color:var(--muted)">結果:</span> <span style="color:var(--gold);font-weight:700">${h.result}</span>${h.pay3t ? ` <span style="color:var(--muted)">¥${h.pay3t.toLocaleString()}</span>` : ''}</div>` : '';
       return `<div class="hist-card">
         <div class="hist-hdr">

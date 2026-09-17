@@ -1822,6 +1822,7 @@ const MAX_MAIN     = 4;      // 本線の最大点数
 const MAX_ANA      = 2;      // 穴の最大点数
 const EXHIBIT_GRACE_LEAD = 25;   // 締切がこれ以内なら展示が無くても投稿する（分）
 const RESULT_WAIT_MIN    = 60;   // 締切からこれだけ経った未確定は待たずに投稿する（分）
+const SKIP_POST_CAP      = 2;    // 1日に投稿する「見送り」の上限（買い目の投稿枠とは別勘定）
 const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
 
 // ホーム場。開催していればこの場のレースを優先して投稿する。
@@ -2395,7 +2396,21 @@ app.all('/api/auto-post', async (req, res) => {
         d.setUTCDate(d.getUTCDate() - 1);
         return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
       })();
+      // 追記式のリストを優先して読む。v3.36以前に書かれたJSON形式も読めるようにしておく。
+      // 念のため同じレースが複数回入っていれば先頭だけを使う
       const readLog = async d => {
+        const rows = await redisCmd('LRANGE', `xlogl:${d}`, 0, -1);
+        if (Array.isArray(rows) && rows.length) {
+          const out = [], seen = new Set();
+          for (const r of rows) {
+            try {
+              const e = JSON.parse(r);
+              const k = `${e.jcd}:${e.rno}`;
+              if (!seen.has(k)) { seen.add(k); out.push(e); }
+            } catch {}
+          }
+          return out;
+        }
         try { return JSON.parse(await redisCmd('GET', `xlog:${d}`) || '[]'); } catch { return []; }
       };
       let day  = hd;
@@ -2523,20 +2538,36 @@ app.all('/api/auto-post', async (req, res) => {
     if (!cands.length) return res.json({ ok: true, skipped: `締切${minLead}〜${maxLead}分前のレースなし`, timing });
 
     const tDedup = Date.now();
+    // 同時に走った実行が同じレースを二重に処理しないよう、先に印を立てて確保する。
+    // GETしてからSETする作りだと、間に別の実行が入って Gemini を二重に消費し、
+    // 投稿数も二重に数えてしまう。NX は既に印があれば失敗するので、確保できるのは1実行だけ
     let target = null;
     for (const c of cands) {
-      const done = await redisCmd('GET', `xposted:${hd}:${c.jcd}:${c.rno}`);
-      if (!done) { target = c; break; }
+      const key = `xposted:${hd}:${c.jcd}:${c.rno}`;
+      if (dryRun) {                                  // 下見では印を立てない
+        if (!await redisCmd('GET', key)) { target = c; break; }
+        continue;
+      }
+      if (!REDIS_ENABLED) { target = c; break; }     // Redis無しでは確保できないので従来どおり
+      // 途中で落ちても次の実行が拾えるよう、確保の印は短命にする（投稿できたら伸ばす）
+      const claim = await redisRaw(['SET', key, 'processing', 'NX', 'EX', '600']);
+      if (claim.ok && claim.result === 'OK') { target = c; break; }
     }
     timing.dedup = Date.now() - tDedup;
     if (target) target.home = homes.includes(target.jcd);
     if (!target) return res.json({ ok: true, skipped: '対象レースは投稿済み', homes, timing });
+
+    // 確保しただけで投稿しなかった場合は印を外す。次の実行が同じレースを拾えるようにする
+    const release = async () => {
+      if (!dryRun && REDIS_ENABLED) await redisCmd('DEL', `xposted:${hd}:${target.jcd}:${target.rno}`);
+    };
 
     // X側が投稿を受け付けない状態（認証エラー・クレジット切れ）が分かっているときは、
     // 予想生成に進まず打ち切る。投稿できないのにGeminiの無料枠を消費するのを防ぐ
     if (!dryRun && !resumed) {
       const hold = await redisCmd('GET', 'xhold');
       if (hold) {
+        await release();
         return res.json({
           ok: true,
           skipped: `X投稿を一時停止中: ${hold}`,
@@ -2548,6 +2579,7 @@ app.all('/api/auto-post', async (req, res) => {
 
     // X の認証情報が無ければ投稿できないので、Gemini を消費する前に打ち切る
     if (!dryRun && !X_ENABLED) {
+      await release();
       return res.json({ ok: false, skipped: 'X認証情報が未設定のため予想生成を行いません', hint: '/api/x-health で設定状況を確認してください', target, timing });
     }
 
@@ -2556,6 +2588,7 @@ app.all('/api/auto-post', async (req, res) => {
     // データ取得に最大18秒＋AI生成に最低9秒を見込み、それを下回るなら見送る
     const remain = tEnd - Date.now();
     if (remain < 28000) {
+      await release();
       return res.json({ ok: true, skipped: '準備に時間がかかったため次回の実行で投稿します', target, remainMs: remain, timing });
     }
     const tPred = Date.now();
@@ -2564,12 +2597,24 @@ app.all('/api/auto-post', async (req, res) => {
     const needExhibit = target.lead > EXHIBIT_GRACE_LEAD;
     const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 19000), { needExhibit });
     timing.predict = Date.now() - tPred;
-    if (got.wait) return res.json({ ok: true, skipped: `${got.wait}（締切${target.lead}分前）。次の実行で投稿します`, target, timing });
-    if (got.error) return res.json({ ok: false, target, error: got.error, timing });
+    if (got.wait)  { await release(); return res.json({ ok: true, skipped: `${got.wait}（締切${target.lead}分前）。次の実行で投稿します`, target, timing }); }
+    if (got.error) { await release(); return res.json({ ok: false, target, error: got.error, timing }); }
 
     const tw = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
     const text = tw.text;
-    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), points: tw.matoi.length + tw.ana.length, posting: { matoi: tw.matoi, ana: tw.ana }, predCached: got.cached, timing });
+    const bought = tw.matoi.length + tw.ana.length;
+    if (dryRun) return res.json({ ok: true, dryRun: true, target, text, xLen: xLen(text), points: bought, posting: { matoi: tw.matoi, ana: tw.ana }, predCached: got.cached, timing });
+
+    // 見送りは買い目の投稿枠とは別勘定にする。枠を食い潰さない代わりに、
+    // 見送りばかり並ぶのも困るので、見送り自体の1日の上限を設ける
+    if (bought === 0) {
+      const sc = parseInt(await redisCmd('GET', `xskip:${hd}`) || '0');
+      if (sc >= SKIP_POST_CAP) {
+        // 同じレースを毎回作り直さないよう、印は残したまま次のレースへ進める
+        await redisCmd('SET', `xposted:${hd}:${target.jcd}:${target.rno}`, '1', 'EX', '86400');
+        return res.json({ ok: true, skipped: `見送りの投稿上限(${SKIP_POST_CAP}件)に達しているため投稿しません`, target, timing });
+      }
+    }
 
     const posted = await postToX(text);
     // 同一内容の重複投稿をXは403で拒否する。これは「既に投稿済み」であって
@@ -2579,24 +2624,26 @@ app.all('/api/auto-post', async (req, res) => {
 
     if (posted.ok || duplicate) {
       await redisCmd('SET', `xposted:${hd}:${target.jcd}:${target.rno}`, '1', 'EX', '86400');
-      await redisCmd('INCR', `xcount:${hd}`);
-      await redisCmd('EXPIRE', `xcount:${hd}`, '86400');
-      let log = [];
-      try { log = JSON.parse(await redisCmd('GET', `xlog:${hd}`) || '[]'); } catch {}
-      // 同じレースが履歴に二重登録されないようにする
-      if (!log.some(p => p.jcd === target.jcd && p.rno === target.rno)) {
-        // 本文に載せた買い目だけを残す（結果まとめの的中判定がこれを使う）
-        log.push({ v: 2, jcd: target.jcd, venue: target.venue, rno: target.rno, t: target.time, matoi: tw.matoi, ana: tw.ana });
-        await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
-      }
+      // 買い目を出したレースだけを1日の投稿上限に数える。見送りは別のカウンタ
+      const counter = bought > 0 ? `xcount:${hd}` : `xskip:${hd}`;
+      await redisCmd('INCR', counter);
+      await redisCmd('EXPIRE', counter, '86400');
+      // 履歴は追記のみ。読んで書き直すと、同時実行のときに1件消える
+      await redisCmd('RPUSH', `xlogl:${hd}`,
+        JSON.stringify({ v: 2, jcd: target.jcd, venue: target.venue, rno: target.rno, t: target.time, matoi: tw.matoi, ana: tw.ana }));
+      await redisCmd('EXPIRE', `xlogl:${hd}`, '172800');
       // 校正の材料を残す（見送りのレースも、買わなかった判断が正しかったか測れる）
       try { await saveCalibSource(hd, target.jcd, target.rno, got.pred, got.odds3t, [...tw.matoi, ...tw.ana]); } catch {}
       await redisCmd('DEL', 'xhold');
-    } else if (posted.status === 402 || posted.status === 401 || posted.status === 403) {
-      // 認証や契約に起因する失敗は時間をおいても直らないため、1時間は生成を止める
-      await redisCmd('SET', 'xhold', `HTTP${posted.status} ${posted.error || ''}`.slice(0, 120), 'EX', '3600');
+    } else {
+      // 投稿できなかったレースは確保を外し、次の実行で拾い直せるようにする
+      await release();
+      if (posted.status === 402 || posted.status === 401 || posted.status === 403) {
+        // 認証や契約に起因する失敗は時間をおいても直らないため、1時間は生成を止める
+        await redisCmd('SET', 'xhold', `HTTP${posted.status} ${posted.error || ''}`.slice(0, 120), 'EX', '3600');
+      }
     }
-    res.json({ ok: posted.ok || duplicate, duplicate: duplicate || undefined, target, text, posted, timing });
+    res.json({ ok: posted.ok || duplicate, duplicate: duplicate || undefined, points: bought, target, text, posted, timing });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
