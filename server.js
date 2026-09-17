@@ -2000,7 +2000,7 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   const cacheKey = `v6_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
   const cached = await lookupSharedPredict(cacheKey);
   if (cached) {
-    try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, schedule: rl.schedule }; } catch {}
+    try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, schedule: rl.schedule, odds3t }; } catch {}
   }
 
   // 共有モーター評価をマージ（みんなの評価をAIに渡す）
@@ -2030,7 +2030,7 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   catch { return { error: '予想の解析に失敗' }; }
   const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
   await storePredict(cacheKey, result);
-  return { pred, venue, cached: false, schedule: rl.schedule };
+  return { pred, venue, cached: false, schedule: rl.schedule, odds3t };
 }
 
 // 3連単の買い目表記を正規化する（全角や矢印など表記ゆれを 1-2-3 形式に揃える）。
@@ -2217,6 +2217,142 @@ function buildResultTweet(hd, rows, extra = {}) {
   return head + cut.body + mkTail(lines.length - cut.n);
 }
 
+// ===== 校正（キャリブレーション）の記録 =====
+// 回収率は1本の高配当で数週間ぶれるため、それだけでは期待値方式の良否を判定できない。
+// 「AIがp%と言った組は実際にp%当たるのか」は候補ごとに1レース24点たまるので、
+// 少ないレース数で判定できる。投稿時の確率とオッズを残し、結果が出たら突き合わせる。
+const CALIB_KEEP = 400;   // 保持するレース数
+
+// オッズから市場の見立て（控除率を除いた実効確率）を逆算する。
+// 全120組ぶん揃っていないと合計がずれるので、揃っている時だけ使う
+function marketImplied(odds) {
+  const vals = Object.values(odds || {}).filter(v => v > 0);
+  if (vals.length < 100) return null;
+  const overround = vals.reduce((s, v) => s + 1 / v, 0);
+  if (!(overround > 0)) return null;
+  return combo => (odds[combo] > 0 ? (1 / odds[combo]) / overround * 100 : null);
+}
+
+// 投稿時点の材料（候補の確率・実オッズ・実際に買った組）を残す。
+// レースごとに別キーにして、読んで書き直す競合が起きないようにする
+async function saveCalibSource(hd, jcd, rno, pred, odds3t, bought) {
+  const cand = {};
+  for (const d of pred.ev_detail || []) if (d && d.c) cand[d.c] = d.p;
+  const odds = {};
+  for (const [k, v] of Object.entries(odds3t || {})) if (v > 0) odds[k] = Math.round(v * 10) / 10;
+  await redisCmd('SET', `calibsrc:${hd}:${jcd}:${rno}`,
+    JSON.stringify({ cand, odds, bought, mode: pred.ev_mode || null }), 'EX', '259200');
+}
+
+// 結果が出たレースについて、確率と実際の当たりを突き合わせて記録する。
+// 1日ぶんをまとめて1回だけ記録する（calibdone で二重記録を防ぐ）
+async function recordCalibration(day, settled) {
+  if (await redisCmd('GET', `calibdone:${day}`)) return { skipped: 'recorded' };
+  const targets = settled.filter(x => x.result && x.jcd);
+  if (!targets.length) return { skipped: 'no results' };
+
+  const srcs = await Promise.all(targets.map(async x => {
+    try { return JSON.parse(await redisCmd('GET', `calibsrc:${day}:${x.jcd}:${x.rno}`) || 'null'); }
+    catch { return null; }
+  }));
+
+  const entries = [];
+  for (let i = 0; i < targets.length; i++) {
+    const x = targets[i], src = srcs[i];
+    if (!src) continue;                       // v3.35以前の投稿には材料が無い
+    const implied = marketImplied(src.odds);
+    const bought = src.bought || [];
+    const win = x.result;
+    // 候補ごとの (確率, 当たったか)。校正バケットの材料
+    const cands = Object.entries(src.cand || {}).map(([c, pv]) => [+(+pv).toFixed(2), c === win ? 1 : 0]);
+    entries.push({
+      hd: day, jcd: x.jcd, rno: x.rno, win, pay: x.pay || 0,
+      mode: src.mode,
+      aiP:  src.cand?.[win] ?? 0,                                  // AIが勝った組に付けた確率
+      mktP: implied ? implied(win) : null,                          // 市場が同じ組に付けていた確率
+      betP: bought.reduce((t, c) => t + (src.cand?.[c] ?? 0), 0),   // 買った組の合計確率（的中予測）
+      betMktP: implied ? bought.reduce((t, c) => t + (implied(c) ?? 0), 0) : null,
+      hit: bought.includes(win) ? 1 : 0,
+      points: bought.length,
+      cands,
+    });
+  }
+  if (!entries.length) return { skipped: 'no source' };
+  // 追記のみ（読んで書き直さないので、同時実行でも記録が消えない）
+  await redisRaw(['RPUSH', 'calib:log', ...entries.map(e => JSON.stringify(e))], 8000);
+  await redisCmd('LTRIM', 'calib:log', -CALIB_KEEP, -1);
+  await redisCmd('SET', `calibdone:${day}`, String(entries.length), 'EX', '604800');
+  return { recorded: entries.length };
+}
+
+// 校正の集計。「AIの確率は当たっているか」「市場より良いか」を返す
+app.get('/api/calibration', async (req, res) => {
+  try {
+    const raw = await redisCmd('LRANGE', 'calib:log', 0, -1);
+    const list = (Array.isArray(raw) ? raw : []).map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
+    // 同じレースが複数回記録されていれば新しい方を残す
+    const uniq = new Map();
+    for (const e of list) uniq.set(`${e.hd}:${e.jcd}:${e.rno}`, e);
+    const races = [...uniq.values()];
+    if (!races.length) return res.json({ races: 0, note: '記録がまだありません。投稿と結果まとめが1日ぶん動くと貯まります' });
+
+    const bet = races.filter(r => r.points > 0);
+    const hits = bet.filter(r => r.hit).length;
+    const points = bet.reduce((s, r) => s + r.points, 0);
+    const payout = bet.reduce((s, r) => s + (r.hit ? r.pay : 0), 0);
+
+    // ブライアスコア（小さいほど良い）。AIの見立てと市場の見立てを同じ買い目で比べる
+    const withMkt = bet.filter(r => r.betMktP != null);
+    const brier = arr => arr.length ? +(arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(4) : null;
+    const brierAI  = brier(bet.map(r => Math.pow(r.betP / 100 - r.hit, 2)));
+    const brierMkt = brier(withMkt.map(r => Math.pow(r.betMktP / 100 - r.hit, 2)));
+
+    // 勝った組に、AIと市場がそれぞれ何%を置いていたか（平均）
+    const winCmp = races.filter(r => r.mktP != null);
+    const mean = a => a.length ? +(a.reduce((s, v) => s + v, 0) / a.length).toFixed(2) : null;
+    const aiOnWin  = mean(winCmp.map(r => r.aiP));
+    const mktOnWin = mean(winCmp.map(r => r.mktP));
+
+    // 校正バケット: 「p%と言った組」が実際に何%当たったか
+    const EDGES = [0, 1, 2, 5, 10, 20, 100];
+    const buckets = EDGES.slice(0, -1).map((lo, i) => ({ lo, hi: EDGES[i + 1], n: 0, sumP: 0, hits: 0 }));
+    for (const r of races) {
+      for (const [pv, h] of r.cands || []) {
+        const b = buckets.find(b => pv >= b.lo && pv < b.hi) || buckets[buckets.length - 1];
+        b.n++; b.sumP += pv; b.hits += h;
+      }
+    }
+
+    res.json({
+      races: races.length,
+      bet: bet.length,
+      skipped: races.length - bet.length,
+      hit: hits,
+      points,
+      invested: points * 100,
+      payout,
+      roi: points ? Math.round(payout / (points * 100) * 100) : null,
+      // 勝った組への見立て比較。AIが市場を下回り続けるなら期待値方式は価値を生んでいない
+      winner: { n: winCmp.length, aiMeanP: aiOnWin, marketMeanP: mktOnWin,
+        verdict: aiOnWin == null || mktOnWin == null ? null
+          : aiOnWin > mktOnWin ? 'AIの見立てが市場より勝った組を高く評価できている'
+          : 'AIの見立ては市場を上回れていない' },
+      brier: { ai: brierAI, market: brierMkt,
+        verdict: brierAI == null || brierMkt == null ? null
+          : brierAI < brierMkt ? 'AIの確率のほうが正確' : '市場の確率のほうが正確' },
+      calibration: buckets.filter(b => b.n).map(b => ({
+        range: `${b.lo}〜${b.hi}%`,
+        n: b.n,
+        predicted: +(b.sumP / b.n).toFixed(2),
+        actual: +(b.hits / b.n * 100).toFixed(2),
+      })),
+      note: '予測(predicted)と実績(actual)が近いほど確率の見積もりが正確。races が30を超えるまでは参考値',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 自動投稿エンドポイント（GitHub Actions などから定期実行）
 //   mode=races   : 締切が近いレースの予想を投稿
 //   mode=results : 本日投稿した予想の結果まとめを投稿
@@ -2278,20 +2414,22 @@ app.all('/api/auto-post', async (req, res) => {
       // 取得できなかったレースを黙って捨てると「8レース投稿したのに5件しか出ない」
       // という状態になるため、落ちた理由を state として必ず残す
       const settled = await Promise.all(log.slice(0, 8).map(async p => {
-        const base = { venue: p.venue, rno: p.rno };
+        const base = { venue: p.venue, rno: p.rno, jcd: p.jcd };
         // 判定は「投稿した買い目」だけで行う。v3.25以前の履歴は全点を保存していたが
         // 本文には本線4点・穴2点しか載せていなかったため、その範囲に絞る
         const legacy = !p.v;
         const mm = legacy ? (p.matoi || []).slice(0, 4) : (p.matoi || []);
         const aa = legacy ? (p.ana   || []).slice(0, 2) : (p.ana   || []);
-        // 見送りを出したレースは買い目が無いので的中判定の対象外。件数だけ残す
-        if (!mm.length && !aa.length) return { ...base, state: 'skip' };
+        const bet = mm.length + aa.length > 0;
+        // 見送りのレースも結果は取る。買わなかった判断が正しかったかを校正に残すため
         const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${day}&rno=${p.rno}`, 10000);
-        if (!html) return { ...base, state: 'pending', why: 'fetch', t: p.t };
-        const r = parseRaceResult(html);
-        if (!r.order || r.order.length < 3) return { ...base, state: 'pending', why: 'notfinal', t: p.t };
-        const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
-        const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
+        const r = html ? parseRaceResult(html) : null;
+        const final = !!(r && r.order && r.order.length >= 3);
+        const tri = final ? r.order.slice(0, 3).map(o => o.lane).join('-') : null;
+        const pay = final ? (r.payouts?.find(x => x.type === '3連単')?.pay || 0) : 0;
+        // 買い目が無いレースは的中判定の対象外。未確定でも投稿を止める理由にはしない
+        if (!bet) return { ...base, state: 'skip', result: tri, pay };
+        if (!final) return { ...base, state: 'pending', why: html ? 'notfinal' : 'fetch', t: p.t };
         const hit = mm.includes(tri) ? 'matoi' : aa.includes(tri) ? 'ana' : 'none';
         return { ...base, state: 'judged', result: tri, pay, hit, points: mm.length + aa.length };
       }));
@@ -2322,10 +2460,13 @@ app.all('/api/auto-post', async (req, res) => {
       }
       const text = buildResultTweet(day, rows, { noBet: noBet.length, pending: pending.length, today: day === hd });
       if (dryRun) return res.json({ ok: true, dryRun: true, day, text, xLen: xLen(text), counts, rows, noBet, pending });
+      // 結果が出そろったこの時点で、確率と実際の当たりを突き合わせて記録する
+      let calib = null;
+      try { calib = await recordCalibration(day, settled); } catch (e) { calib = { error: e.message }; }
       const posted = await postToX(text);
       // 前日ぶんを投稿した場合もその日の記録として残す（二重投稿を防ぐ）
       if (posted.ok) await redisCmd('SET', `xresult:${day}`, '1', 'EX', '172800');
-      return res.json({ ok: posted.ok, day, text, posted });
+      return res.json({ ok: posted.ok, day, text, posted, counts, calib });
     }
 
     // mode=races: 締切15〜90分前のレースを1件だけ投稿（Vercelの30秒制限に収めるため）
@@ -2448,6 +2589,8 @@ app.all('/api/auto-post', async (req, res) => {
         log.push({ v: 2, jcd: target.jcd, venue: target.venue, rno: target.rno, t: target.time, matoi: tw.matoi, ana: tw.ana });
         await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
       }
+      // 校正の材料を残す（見送りのレースも、買わなかった判断が正しかったか測れる）
+      try { await saveCalibSource(hd, target.jcd, target.rno, got.pred, got.odds3t, [...tw.matoi, ...tw.ana]); } catch {}
       await redisCmd('DEL', 'xhold');
     } else if (posted.status === 402 || posted.status === 401 || posted.status === 403) {
       // 認証や契約に起因する失敗は時間をおいても直らないため、1時間は生成を止める
