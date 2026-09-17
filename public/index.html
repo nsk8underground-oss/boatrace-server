@@ -495,6 +495,8 @@ input,select{font-family:var(--sans);}
 
   <!-- ── PAGE 5: HISTORY ── -->
   <div class="page" id="page-history">
+    <div class="sec">AI予想の精度 <span style="color:var(--muted);font-size:9px">— X投稿ぶんの実績</span><button class="exhibit-btn" onclick="loadCalibration()" style="margin-left:auto">↻ 更新</button></div>
+    <div id="calibBox" style="margin:0 14px 10px"></div>
     <div class="sec">予想履歴 <span style="color:var(--muted);font-size:9px">— 的中管理</span><button class="exhibit-btn" onclick="clearHistory()" style="margin-left:auto;border-color:rgba(255,64,96,0.3);color:var(--red)">全削除</button></div>
     <div id="histList"></div>
   </div>
@@ -546,7 +548,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.34';
+const APP_VERSION = 'v3.36';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -993,6 +995,60 @@ function buildHistory() {
       </div>`;
     }).join('')}
     <div style="height:8px"></div>`;
+}
+
+/* ======================== CALIBRATION ======================== */
+// X投稿ぶんの実績。回収率は1本の高配当で大きくぶれるので、
+// 「AIの確率が当たっているか」「市場より良い見立てができているか」を併せて見る
+async function loadCalibration() {
+  const el = document.getElementById('calibBox');
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:11px;color:var(--muted);font-family:var(--mono)">読み込み中...</div>';
+  try {
+    const res = await fetch(`${SERVER_URL}/api/calibration`, { signal: AbortSignal.timeout(20000) });
+    const c = await res.json();
+    if (!res.ok) throw new Error(c.error || '取得できませんでした');
+    if (!c.races) {
+      el.innerHTML = `<div style="font-size:11px;color:var(--muted);line-height:1.6">${escapeHtml(c.note || '記録がまだありません')}</div>`;
+      return;
+    }
+    const roiColor = c.roi >= 100 ? 'var(--accent2)' : c.roi >= 75 ? 'var(--gold)' : 'var(--red)';
+    const w = c.winner || {}, br = c.brier || {};
+    // AIが勝った組に置いた確率が市場を上回っているか — 期待値方式が効いているかの核心
+    const better = w.aiMeanP != null && w.marketMeanP != null && w.aiMeanP > w.marketMeanP;
+    const cmpColor = w.aiMeanP == null ? 'var(--muted)' : better ? 'var(--accent2)' : 'var(--red)';
+    const rows = (c.calibration || []).map(b =>
+      `<tr><td style="color:var(--muted)">${b.range}</td><td style="text-align:right">${b.n}</td>`
+      + `<td style="text-align:right">${b.predicted}%</td>`
+      + `<td style="text-align:right;color:${Math.abs(b.actual - b.predicted) <= Math.max(1, b.predicted * 0.5) ? 'var(--accent2)' : 'var(--orange)'}">${b.actual}%</td></tr>`
+    ).join('');
+    el.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+          <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">
+            ${c.races}レース（買った${c.bet} / 見送り${c.skipped}）・的中${c.hit}<br>
+            <span style="font-size:9px">投資¥${(c.invested||0).toLocaleString()} → 回収¥${(c.payout||0).toLocaleString()}</span>
+          </div>
+          <div style="font-size:20px;font-weight:700;font-family:var(--mono);color:${roiColor}">${c.roi ?? '—'}%</div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:8px;font-size:11px;line-height:1.7">
+          <div>勝った組への見立て　
+            <span style="font-family:var(--mono);color:${cmpColor};font-weight:700">AI ${w.aiMeanP ?? '—'}%</span>
+            <span style="color:var(--muted)"> vs 市場 ${w.marketMeanP ?? '—'}%</span></div>
+          <div style="font-size:10px;color:${cmpColor}">${escapeHtml(w.verdict || '判定にはもう少しレース数が必要です')}</div>
+          ${br.ai != null ? `<div style="font-size:10px;color:var(--muted);margin-top:3px">確率の正確さ(小さいほど良い) AI ${br.ai} / 市場 ${br.market ?? '—'}</div>` : ''}
+        </div>
+        ${rows ? `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+          <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:4px">「p%と言った組」が実際に当たった割合</div>
+          <table style="width:100%;font-size:10px;font-family:var(--mono);border-collapse:collapse">
+            <tr style="color:var(--muted)"><td>確率帯</td><td style="text-align:right">件数</td><td style="text-align:right">予測</td><td style="text-align:right">実績</td></tr>
+            ${rows}
+          </table></div>` : ''}
+        <div style="font-size:9px;color:var(--muted);margin-top:8px">${escapeHtml(c.note || '')}</div>
+      </div>`;
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--red)">取得エラー: ${escapeHtml(e.message || String(e))}</div>`;
+  }
 }
 
 /* ======================== AUTO ODDS REFRESH ======================== */
@@ -1811,7 +1867,7 @@ async function runPredict(auto = false) {
   const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
   // ex0/ex1: 展示タイム反映前後で別キー — 展示反映後は新しい予想に自動アップグレードされる
   const hasEx = raceData.racers.some(r => r.exhibitTime != null);
-  const cacheKey = `v5_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
+  const cacheKey = `v6_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
 
   let sharedData = null;
   if (auto) {
@@ -1844,10 +1900,13 @@ async function runPredict(auto = false) {
     const ex = loadExhibit(currentRace, r.lane);
     if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
     if (r.exhibitST   != null) ex.st          = r.exhibitST;
+    // 単勝オッズは渡さない（人気を見せると確率の見積もりが人気に引きずられる。BOT側と同じ方針）。
+    // 進入コースは展示が出ていれば確定値、まだなら「未定」
+    const course = hasEx && r.course ? r.course : '未定';
     return `${r.lane}号艇:${r.name||'不明'}(${r.cls||'—'}/${r.branch||'—'}) `+
       `全国${r.allRate||0}/当地${r.localRate||0}/2連${r.all2Rate||0}% F/L:${r.fl||'0/0'} avgST:${r.avgST||0.18} `+
-      `単勝:${r.odds!=null?r.odds.toFixed(1)+'倍':'不明'} モーター:${md.grade||'未評価'}(2連${r.motor2Rate||0}%) `+
-      `展示:${ex.exhibitTime||'不明'} 展示ST:${ex.st||'不明'} メモ:${md.note||'なし'}`;
+      `モーター:${md.grade||'未評価'}(2連${r.motor2Rate||0}%) `+
+      `コース:${course} 展示:${ex.exhibitTime||'不明'} 展示ST:${ex.st||'不明'} メモ:${md.note||'なし'}`;
   }).join('\n');
 
   const wAdv    = windAdvice[wind]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
@@ -1868,7 +1927,8 @@ async function runPredict(auto = false) {
   const prompt = `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
 【${VENUE_NAME} 第${currentRace}レース】
-天候:${weather.sky||'不明'} 風速:${weather.wind||'不明'}m/s 水温:${weather.water||'不明'}℃ 波高:${weather.wave||'不明'}cm
+天候:${weather.sky||'不明'} 風向:${weather.windDir||'不明'} 風速:${weather.wind||'不明'}m/s 水温:${weather.water||'不明'}℃ 波高:${weather.wave||'不明'}cm
+（コースは展示で確定した進入。「未定」は枠なり想定）
 選択条件 — 風向:${wind} / 潮位:${tide}
 ${fixLine}
 
@@ -2205,7 +2265,7 @@ function showPage(name, btn) {
   btn.classList.add('active');
   if (name === 'race') loadDashboard();
   if (name === 'predict') { buildOddsPanel(); if (raceData) runPredict(true).catch(() => {}); }
-  if (name === 'history') { buildHistory(); autoCheckResults().catch(() => {}); }
+  if (name === 'history') { buildHistory(); loadCalibration().catch(() => {}); autoCheckResults().catch(() => {}); }
 }
 
 /* ======================== CLOCK ======================== */
