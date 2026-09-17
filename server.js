@@ -1816,6 +1816,8 @@ const ANA_MIN_ODDS = 30;     // これ以上を穴として扱う
 // 「点数が多い」という指摘を受けて、期待値の高い順に本線4点・穴2点の計6点(¥600)までに絞る
 const MAX_MAIN     = 4;      // 本線の最大点数
 const MAX_ANA      = 2;      // 穴の最大点数
+const EXHIBIT_GRACE_LEAD = 25;   // 締切がこれ以内なら展示が無くても投稿する（分）
+const RESULT_WAIT_MIN    = 60;   // 締切からこれだけ経った未確定は待たずに投稿する（分）
 const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
 
 // ホーム場。開催していればこの場のレースを優先して投稿する。
@@ -1965,7 +1967,7 @@ function applyEV(pred, odds3t) {
 }
 
 // 1レース分のデータを集めて予想を取得（共有キャッシュ優先・なければ生成して共有キャッシュに保存）
-async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
+async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   const venue = VENUES[jcd] || '';
   const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
   // 4種を並列取得（所要時間は最も遅い1本ぶん）。
@@ -1984,6 +1986,9 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs) {
   const odds3t = o3H ? (parseOdds3t(o3H).odds || {}) : {};
 
   const hasEx = Object.keys(before.exhibit).length > 0;
+  // 展示タイム・展示STが出る前に予想を出すと、いちばん効く直前情報が抜けたまま固定される。
+  // 締切まで間があるうちは投稿せず、次の実行で展示が出てから出す（Geminiも消費しない）
+  if (opts.needExhibit && !hasEx) return { wait: '展示情報がまだ出ていません' };
   // v5: 期待値ベースの選定に切り替えたため、v4 の古い形式は使い回さない
   const cacheKey = `v5_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
   const cached = await lookupSharedPredict(cacheKey);
@@ -2274,9 +2279,9 @@ app.all('/api/auto-post', async (req, res) => {
         // 見送りを出したレースは買い目が無いので的中判定の対象外。件数だけ残す
         if (!mm.length && !aa.length) return { ...base, state: 'skip' };
         const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${day}&rno=${p.rno}`, 10000);
-        if (!html) return { ...base, state: 'pending', why: 'fetch' };
+        if (!html) return { ...base, state: 'pending', why: 'fetch', t: p.t };
         const r = parseRaceResult(html);
-        if (!r.order || r.order.length < 3) return { ...base, state: 'pending', why: 'notfinal' };
+        if (!r.order || r.order.length < 3) return { ...base, state: 'pending', why: 'notfinal', t: p.t };
         const tri = r.order.slice(0, 3).map(o => o.lane).join('-');
         const pay = r.payouts?.find(x => x.type === '3連単')?.pay || 0;
         const hit = mm.includes(tri) ? 'matoi' : aa.includes(tri) ? 'ana' : 'none';
@@ -2289,10 +2294,19 @@ app.all('/api/auto-post', async (req, res) => {
 
       // まだ確定していないレースがあるうちは投稿しない。投稿すると xresult でその日は
       // 打ち切られ、未確定ぶんが永久に集計から欠けてしまうため、次の枠で拾い直す。
-      // ただし日付をまたいだ前日ぶんと、当日でも23時を過ぎたら、あるものだけで投稿する
-      const lastChance = day !== hd || nowMin >= 23 * 60;
+      //
+      // ただし「次の枠」は後続の実行があることが前提で、結果まとめを1日1回しか
+      // 叩かない運用だと次が来ず、その日は永久に投稿されない。
+      // 締切から十分たった未確定は確定しない（取得失敗など）とみなして投稿する。
+      // 日付をまたいだ前日ぶんと、当日でも23時を過ぎた場合も同じ
+      const toMin = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || '')); return m ? +m[1] * 60 + +m[2] : null; };
+      const stale = pending.length > 0 && pending.every(x => {
+        const closed = toMin(x.t);
+        return closed != null && nowMin - closed >= RESULT_WAIT_MIN;
+      });
+      const lastChance = day !== hd || nowMin >= 23 * 60 || stale;
       if (!dryRun && pending.length && !lastChance) {
-        return res.json({ ok: true, skipped: `未確定${pending.length}件。次の枠で投稿します`, day, counts, pending });
+        return res.json({ ok: true, skipped: `未確定${pending.length}件。次の枠で投稿します`, day, counts, pending, hint: '結果まとめの実行が1日1回だけだと次の枠が来ません。21:30/22:30/23:30 の3回に増やすと取りこぼしません' });
       }
       if (!rows.length) {
         const why = noBet.length && !pending.length ? '全レース見送りのため集計対象なし' : '確定した結果なし';
@@ -2308,7 +2322,9 @@ app.all('/api/auto-post', async (req, res) => {
 
     // mode=races: 締切15〜90分前のレースを1件だけ投稿（Vercelの30秒制限に収めるため）
     const minLead = parseInt(req.query.minLead) || 15;
-    const maxLead = parseInt(req.query.maxLead) || 90;
+    // 展示は締切のおよそ30〜40分前に出る。90分前まで対象にしていると、
+    // 展示が出る前のレースばかり選ばれて予想の材料が足りなくなる
+    const maxLead = parseInt(req.query.maxLead) || 45;
     const dailyCap = parseInt(req.query.cap) || 8;
 
     // 設定を直したあとの再開は最初に処理する。
@@ -2389,8 +2405,12 @@ app.all('/api/auto-post', async (req, res) => {
       return res.json({ ok: true, skipped: '準備に時間がかかったため次回の実行で投稿します', target, remainMs: remain, timing });
     }
     const tPred = Date.now();
-    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 19000));
+    // 締切まで間があるレースは展示が出てから投稿する。
+    // 締切が近い場合は、展示が取れなくても（取得失敗のこともある）そのまま出す
+    const needExhibit = target.lead > EXHIBIT_GRACE_LEAD;
+    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 19000), { needExhibit });
     timing.predict = Date.now() - tPred;
+    if (got.wait) return res.json({ ok: true, skipped: `${got.wait}（締切${target.lead}分前）。次の実行で投稿します`, target, timing });
     if (got.error) return res.json({ ok: false, target, error: got.error, timing });
 
     const tw = buildRaceTweet(target.venue, target.rno, target.time, got.pred);
@@ -2412,7 +2432,7 @@ app.all('/api/auto-post', async (req, res) => {
       // 同じレースが履歴に二重登録されないようにする
       if (!log.some(p => p.jcd === target.jcd && p.rno === target.rno)) {
         // 本文に載せた買い目だけを残す（結果まとめの的中判定がこれを使う）
-        log.push({ v: 2, jcd: target.jcd, venue: target.venue, rno: target.rno, matoi: tw.matoi, ana: tw.ana });
+        log.push({ v: 2, jcd: target.jcd, venue: target.venue, rno: target.rno, t: target.time, matoi: tw.matoi, ana: tw.ana });
         await redisCmd('SET', `xlog:${hd}`, JSON.stringify(log), 'EX', '172800');
       }
       await redisCmd('DEL', 'xhold');
