@@ -81,16 +81,6 @@ input,select{font-family:var(--sans);}
 .cond-lbl{font-size:9px;color:var(--muted);letter-spacing:0.12em;font-family:var(--mono);margin-bottom:3px;}
 .cond-val{font-size:14px;font-weight:500;}
 .cond-val.live{color:var(--accent2);}
-.cond-sel{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:12px;padding:3px 5px;border-radius:4px;width:100%;margin-top:2px;-webkit-appearance:none;outline:none;}
-.adv-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;padding:12px 14px;}
-.adv-title{font-size:11px;font-family:var(--mono);font-weight:700;margin-bottom:8px;}
-.adv-item{display:flex;align-items:flex-start;gap:7px;margin-bottom:7px;}
-.adv-badge{font-size:10px;font-weight:700;font-family:var(--mono);padding:2px 7px;border-radius:3px;white-space:nowrap;flex-shrink:0;}
-.ab-g{background:rgba(0,255,204,0.12);color:var(--accent2);border:1px solid rgba(0,255,204,0.25);}
-.ab-r{background:rgba(255,64,96,0.12);color:var(--red);border:1px solid rgba(255,64,96,0.25);}
-.ab-y{background:rgba(245,193,24,0.12);color:var(--gold);border:1px solid rgba(245,193,24,0.25);}
-.ab-m{background:rgba(78,106,136,0.15);color:var(--muted);border:1px solid rgba(78,106,136,0.25);}
-.adv-text{font-size:12px;line-height:1.5;color:var(--text);}
 .dememe-scroll{display:flex;gap:8px;padding:4px 14px 8px;overflow-x:auto;scrollbar-width:none;}
 .dememe-scroll::-webkit-scrollbar{display:none;}
 .dc{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:88px;}
@@ -352,26 +342,12 @@ input,select{font-family:var(--sans);}
         <div class="cond-val live" id="condSky">—</div>
       </div>
       <div class="cond-box">
-        <div class="cond-lbl">風向 <span id="condWindDir" style="color:var(--accent2);font-size:10px"></span></div>
-        <select class="cond-sel" id="windDir" onchange="updateAdvice();savePrefs()">
-          <option value="追い風">▶ 追い風</option>
-          <option value="向かい風" selected>◀ 向かい風</option>
-          <option value="横風">↕ 横風</option>
-          <option value="無風">○ 無風</option>
-        </select>
+        <div class="cond-lbl">風向</div>
+        <div class="cond-val live" id="condWindDir">—</div>
       </div>
       <div class="cond-box">
         <div class="cond-lbl">風速</div>
         <div class="cond-val live" id="condWind">—</div>
-      </div>
-      <div class="cond-box">
-        <div class="cond-lbl">潮位</div>
-        <select class="cond-sel" id="tideType" onchange="updateAdvice();savePrefs()">
-          <option value="満潮">満潮</option>
-          <option value="干潮" selected>干潮</option>
-          <option value="上げ潮">上げ潮</option>
-          <option value="下げ潮">下げ潮</option>
-        </select>
       </div>
       <div class="cond-box">
         <div class="cond-lbl">水温</div>
@@ -383,16 +359,6 @@ input,select{font-family:var(--sans);}
       </div>
     </div>
 
-    <div class="sec">風況アドバイス</div>
-    <div class="adv-card">
-      <div class="adv-title" id="windAdvTitle"></div>
-      <div id="windAdvBody"></div>
-    </div>
-    <div class="sec">潮位アドバイス</div>
-    <div class="adv-card">
-      <div class="adv-title" id="tideAdvTitle"></div>
-      <div id="tideAdvBody"></div>
-    </div>
     <div class="sec">出目リスト</div>
     <div class="dememe-scroll" id="dememe1"></div>
   </div>
@@ -548,7 +514,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.37';
+const APP_VERSION = 'v3.39';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -856,19 +822,6 @@ function loadExhibit(race, lane) {
   const date = document.getElementById('dateInput').value.replace(/-/g,'');
   return stor(`${MEET_KEY}_ex_${date}_r${race}_l${lane}`) || { exhibitTime:'', st:'' };
 }
-function savePrefs() {
-  stor(`${MEET_KEY}_prefs`, {
-    wind: document.getElementById('windDir').value,
-    tide: document.getElementById('tideType').value,
-  });
-}
-function loadPrefs() {
-  const p = stor(`${MEET_KEY}_prefs`);
-  if (!p) return;
-  if (p.wind) document.getElementById('windDir').value = p.wind;
-  if (p.tide) document.getElementById('tideType').value = p.tide;
-}
-
 /* ======================== HISTORY ======================== */
 const HIST_KEY = 'br_pred_history';
 function getHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch { return []; } }
@@ -1109,7 +1062,7 @@ function buildMiniRacers(racers) {
       : 'background:rgba(255,140,0,0.25);color:var(--orange)') : '';
     return `<tr>
       <td><span style="background:${lBgM[r.lane-1]};color:${lFgM[r.lane-1]};width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:11px">${r.lane}</span></td>
-      <td style="text-align:left">${r.name||'—'}</td>
+      <td style="text-align:left">${escapeHtml(r.name)||'—'}</td>
       <td class="ecls cls-${r.cls}">${r.cls||'—'}</td>
       <td>${sdLabel ? `<span style="font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;${sdStyle}">${sdLabel}</span>` : '—'}</td>
       <td style="color:${rc}">${r.allRate||0}</td>
@@ -1343,8 +1296,7 @@ async function fetchAllData() {
     buildEntryList(data.racers);
     buildStatsList(data.racers);
     buildMiniRacers(data.racers);
-    updateAdvice();
-    document.getElementById('aiBox').style.display    = 'none';
+      document.getElementById('aiBox').style.display    = 'none';
     document.getElementById('predCards').style.display = 'none';
     buildOddsPanel();
     showToast('✅ データ取得完了');
@@ -1527,76 +1479,15 @@ function updateWeather(w) {
   set('condWind',  w.wind  != null && w.wind  ? `${w.wind}m/s`  : '—');
   set('condWater', w.water != null && w.water ? `${w.water}℃`   : '—');
   set('condWave',  w.wave  != null && w.wave  ? `${w.wave}cm`   : '—');
-  if (w.windDir) {
-    const arr = windArrow(w.windDir);
-    const el = document.getElementById('condWindDir');
-    if (el) el.innerHTML = arr ? `${w.windDir} <span style="font-size:15px;vertical-align:middle">${arr}</span>` : w.windDir;
-    const dirSelect = document.getElementById('windDir');
-    const opts = ['追い風','向かい風','横風','無風'];
-    const matched = opts.find(o => w.windDir.includes(o));
-    if (matched && dirSelect) { dirSelect.value = matched; updateAdvice(); }
+  const wdEl = document.getElementById('condWindDir');
+  if (wdEl) {
+    const arr = w.windDir ? windArrow(w.windDir) : '';
+    wdEl.innerHTML = !w.windDir ? '—'
+      : arr ? `${w.windDir} <span style="font-size:15px;vertical-align:middle">${arr}</span>` : w.windDir;
   }
   updateStatsWeather();
 }
 
-/* ======================== ADVICE DATA ======================== */
-const windAdvice = {
-  '追い風':{c:'var(--accent2)',l:'💨 追い風 — イン優勢',items:[
-    {cls:'ab-g',b:'イン有利',t:'スタートから流れに乗れる1〜2号艇が有利。1号艇逃げ率が上昇する。'},
-    {cls:'ab-y',b:'差し有効',t:'2・3号艇の差しが決まりやすい展開に。内側からのまくり差しに注目。'},
-    {cls:'ab-r',b:'アウト注意',t:'4〜6号艇はターン時に膨らみやすく捲り難易度が上がる。'},
-  ]},
-  '向かい風':{c:'var(--orange)',l:'💨 向かい風 — アウト有利',items:[
-    {cls:'ab-r',b:'まくり増加',t:'インがスタートで遅れやすく、3〜4号艇の捲りが決まる展開に警戒。'},
-    {cls:'ab-y',b:'差し・まくり差し',t:'2号艇差し・3号艇まくり差しが有効。イン逃げ率が低下する。'},
-    {cls:'ab-g',b:'風速依存',t:'6m/s以上では3コース勝率が大幅上昇。荒れ展開の穴狙いチャンス。'},
-  ]},
-  '横風':{c:'var(--purple)',l:'💨 横風 — 荒れ展開',items:[
-    {cls:'ab-r',b:'波乱注意',t:'艇の挙動が不安定になりやすく波乱が起きやすい。穴狙いに好機。'},
-    {cls:'ab-y',b:'モーター重要',t:'エンジン出力の高い艇（評価S・A）ほど影響を受けにくい。'},
-    {cls:'ab-g',b:'内側相対有利',t:'横風でも比較的イン寄りが安定するが風向で大きく変動する。'},
-  ]},
-  '無風':{c:'var(--accent)',l:'💨 無風 — 技量勝負',items:[
-    {cls:'ab-g',b:'イン鉄板',t:'水面穏やかでイン逃げ率が最高になる条件。1号艇信頼度が大幅上昇。'},
-    {cls:'ab-y',b:'勝率重視',t:'純粋な技量差が出やすい。全国・当地勝率を最優先に予想。'},
-    {cls:'ab-m',b:'荒れ少ない',t:'上位人気での決着が多い傾向。堅い買い方が有効。'},
-  ]},
-};
-const tideAdvice = {
-  '満潮':{c:'var(--red)',l:'🌊 満潮 — 水面荒れやすい',items:[
-    {cls:'ab-r',b:'水面不安定',t:'水位が高く波が立ちやすい。ターン難易度上昇、差しが決まりやすくなる。'},
-    {cls:'ab-y',b:'まくり有効',t:'3〜4号艇の大まくりが決まる可能性が増加。波乱に注意。'},
-    {cls:'ab-g',b:'A1級有利',t:'A1級選手のアドバンテージが大きくなる荒れた水面。'},
-  ]},
-  '干潮':{c:'var(--accent2)',l:'🌊 干潮 — 水面安定',items:[
-    {cls:'ab-g',b:'水面穏やか',t:'水位が低く安定。イン逃げが決まりやすい堅い展開になりやすい。'},
-    {cls:'ab-y',b:'差し有効',t:'2号艇の差しが鉄板に近くなる。外からの捲りはやや不利。'},
-    {cls:'ab-m',b:'荒れ少ない',t:'上位人気での決着が多い。堅く買いたい場面。'},
-  ]},
-  '上げ潮':{c:'var(--accent)',l:'🌊 上げ潮 — 内→外へ流れ',items:[
-    {cls:'ab-r',b:'イン不利',t:'潮が内→外へ流れ、インが膨らみやすく捲られやすくなる。'},
-    {cls:'ab-g',b:'アウト有利',t:'4〜5号艇の捲りが入りやすい展開。穴狙いの好機。'},
-    {cls:'ab-y',b:'差しが鍵',t:'潮流を利用した2号艇差しも有効。流れを読む選手が重要。'},
-  ]},
-  '下げ潮':{c:'var(--purple)',l:'🌊 下げ潮 — 外→内へ流れ',items:[
-    {cls:'ab-g',b:'イン安定',t:'潮が外→内に流れ、インが粘れる展開。逃げ率が上昇する。'},
-    {cls:'ab-r',b:'捲り不発',t:'アウト大捲りが潮に逆らう形になりにくく成功率がやや低下。'},
-    {cls:'ab-y',b:'堅め展開',t:'荒れにくく上位人気を信頼しやすい。イン中心の展開が多い。'},
-  ]},
-};
-
-function updateAdvice() {
-  const w = document.getElementById('windDir').value;
-  const t = document.getElementById('tideType').value;
-  renderAdv('windAdvTitle','windAdvBody', windAdvice[w]);
-  renderAdv('tideAdvTitle','tideAdvBody', tideAdvice[t]);
-}
-function renderAdv(tid, bid, d) {
-  document.getElementById(tid).innerHTML = `<span style="color:${d.c}">${d.l}</span>`;
-  document.getElementById(bid).innerHTML = d.items.map(i =>
-    `<div class="adv-item"><span class="adv-badge ${i.cls}">${i.b}</span><span class="adv-text">${i.t}</span></div>`
-  ).join('');
-}
 
 /* ======================== DEMEME ======================== */
 const dememeList = [
@@ -1663,7 +1554,7 @@ function buildEntryList(racers) {
         <div class="lane-col l${r.lane}" style="flex-direction:column;gap:2px">${r.lane}${r.course && r.course !== r.lane ? `<div style="font-size:8px;opacity:0.7;margin-top:1px">${r.course}コ</div>` : ''}<span style="font-size:9px;font-weight:700;font-family:var(--mono);padding:1px 4px;border-radius:3px;${r.course ? (r.course<=3?'background:rgba(0,180,255,0.25);color:var(--accent2)':'background:rgba(255,140,0,0.25);color:var(--orange)') : 'display:none'}">${r.course ? (r.course<=3?'S':'D') : ''}</span></div>
         <div class="entry-main">
           <div class="entry-row1">
-            <span class="entry-name">${r.name||'—'}</span>
+            <span class="entry-name">${escapeHtml(r.name)||'—'}</span>
             <span class="ecls cls-${r.cls}">${r.cls||'—'}</span>
           </div>
           <div class="entry-row2">
@@ -1797,7 +1688,7 @@ function buildStatsList(racers) {
       <div class="stats-hdr">
         <div class="stats-lane l${r.lane}">${r.lane}</div>
         <div class="stats-title">
-          <div class="stats-name2">${r.name||'—'} <span class="ecls cls-${r.cls}" style="font-size:10px">${r.cls||''}</span></div>
+          <div class="stats-name2">${escapeHtml(r.name)||'—'} <span class="ecls cls-${r.cls}" style="font-size:10px">${r.cls||''}</span></div>
           <div class="stats-sub">${r.branch||''}支部 ｜ ${r.age||''}歳 ${r.weight||''}kg ｜ 登録:${r.regNo||'—'}</div>
         </div>
         <div style="padding:10px 12px 10px 0;display:flex;align-items:center;gap:6px">
@@ -1833,9 +1724,9 @@ function buildStatsList(racers) {
 
 /* ======================== AI PREDICT ======================== */
 // 混雑(429)時はカウントダウン表示して1回だけ自動再試行
-async function fetchPredictWithRetry(payload, onWait) {
+async function fetchPredictWithRetry(payload, onWait, path = '/api/predict') {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(`${SERVER_URL}/api/predict`, {
+    const res = await fetch(`${SERVER_URL}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -1894,88 +1785,28 @@ async function runPredict(auto = false) {
   aiText.textContent = auto ? '🌐 共有予想を読み込み中...' : 'Gemini AI がレースデータを解析中...';
   aiText.className = 'ai-text loading';
   const racers = raceData?.racers || [];
-  const wind   = document.getElementById('windDir').value;
-  const tide   = document.getElementById('tideType').value;
 
-  const fixLine = fixedFirst
-    ? `\n【1着固定】${fixedFirst}号艇を1着に固定。matoi・ana ともに全て${fixedFirst}-?-? の形式にすること。`
-    : '';
-
-  const lines = racers.map(r => {
-    const md = loadMotor(r.lane);
+  // 手入力した展示タイム/STだけをサーバーへ渡す（公式に出ていない枠の補完用）。
+  // 出走表・オッズ・プロンプト本文はサーバーが boatrace.jp から取り直して組み立てる
+  const exhibit = {};
+  for (const r of racers) {
+    if (r.exhibitTime != null) continue;
     const ex = loadExhibit(currentRace, r.lane);
-    if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
-    if (r.exhibitST   != null) ex.st          = r.exhibitST;
-    // 単勝オッズは渡さない（人気を見せると確率の見積もりが人気に引きずられる。BOT側と同じ方針）。
-    // 進入コースは展示が出ていれば確定値、まだなら「未定」
-    const course = hasEx && r.course ? r.course : '未定';
-    return `${r.lane}号艇:${r.name||'不明'}(${r.cls||'—'}/${r.branch||'—'}) `+
-      `全国${r.allRate||0}/当地${r.localRate||0}/2連${r.all2Rate||0}% F/L:${r.fl||'0/0'} avgST:${r.avgST||0.18} `+
-      `モーター:${md.grade||'未評価'}(2連${r.motor2Rate||0}%) `+
-      `コース:${course} 展示:${ex.exhibitTime||'不明'} 展示ST:${ex.st||'不明'} メモ:${md.note||'なし'}`;
-  }).join('\n');
-
-  const wAdv    = windAdvice[wind]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
-  const tAdv    = tideAdvice[tide]?.items.map(i=>i.b+':'+i.t).join(' / ') || '';
-  const weather = raceData?.weather || {};
-
-  // 3連単オッズを先読みしてサーバーへ渡す。
-  // AIには人気を見せず、AIの確率見積もりと実オッズの期待値でサーバー側が買い目を決める
-  let odds3tPre = null;
-  if (!auto) {
-    try {
-      const r3 = await fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(12000) });
-      const o3 = (await r3.json()).odds || {};
-      if (Object.keys(o3).length) odds3tPre = o3;
-    } catch {}
+    const t = parseFloat(ex.exhibitTime), s = parseFloat(ex.st);
+    const e = {};
+    if (isFinite(t)) e.exhibitTime = t;
+    if (isFinite(s)) e.st = s;
+    if (Object.keys(e).length) exhibit[r.lane] = e;
   }
 
-  const prompt = `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
-
-【${VENUE_NAME} 第${currentRace}レース】
-天候:${weather.sky||'不明'} 風向:${weather.windDir||'不明'} 風速:${weather.wind||'不明'}m/s 水温:${weather.water||'不明'}℃ 波高:${weather.wave||'不明'}cm
-（コースは展示で確定した進入。「未定」は枠なり想定）
-選択条件 — 風向:${wind} / 潮位:${tide}
-${fixLine}
-
-【風況分析】${wAdv}
-【潮位分析】${tAdv}
-
-【出走表（boatrace.jp 実データ）】
-${lines}
-
-【重要・予想の方針】
-オッズ（市場の人気）はこのプロンプトでは渡しません。人気は他人の予想であって的中確率の根拠ではなく、
-人気順に買うと控除率25%のぶんだけ回収率が必ず100%を下回ります。
-あなたの仕事は「当てにいく買い目を選ぶこと」ではなく、選手・モーター・展示・コース・気象から
-各組の的中確率を正直に見積もることです。サーバー側でその確率と実際のオッズを突き合わせ、
-期待値（確率×オッズ）が1.0を超える組だけを買い目として採用します。
-的中確率を高く見せようとして人気サイドに寄せる必要はありません。薄いと思う組は薄いままにしてください。
-
-以下のJSON形式のみで回答（バッククォート不要）:
-{
-  "analysis": "280文字以内の総合分析",
-  "tenkai_main": "最有力の展開シナリオ130文字以内。どの艇がどう決まるのが本線か、戦術・コース取りを具体的に",
-  "tenkai_ana": "波乱の展開シナリオ130文字以内。何が起きれば高配当になるか具体的に",
-  "wind_effect": "90文字以内",
-  "tide_effect": "90文字以内",
-  "motor_comment": "80文字以内",
-  "focus": "注目艇番号（数字のみ）",
-  "focus_reason": "80文字以内",
-  "cands": [{"c":"1-2-3","p":18},{"c":"1-3-2","p":9}]
-}
-candsは3連単の候補を18〜24組。cは "艇番-艇番-艇番" 形式、pは的中確率(%)の見積もり（小数可）。
-3連単の各組は同時に起こらないので、pの合計は100を超えないこと。
-p が 1 未満になるほど薄い組は入れないこと。同じ組を重複させないこと。
-堅い組だけを並べず、条件から見て起こりうる波乱の組も確率相応の p で入れること。${fixLine ? '\n1着固定の指定がある場合は、candsも全てその艇が1着の組にすること。' : ''}`;
-
   try {
-    const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
     const [predictResp, odds3tResp, odds2tResp, odds3fResp] = await Promise.allSettled([
-      auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry({ prompt, cacheKey, by: getNickname(), odds3t: odds3tPre }, s => {
-        aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
-      }),
-      odds3tPre ? Promise.resolve(null) : fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
+      auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry(
+        { jcd: VENUE_JCD, hd: dateStr, rno: currentRace, fixedFirst: fixedFirst || 0, by: getNickname(), exhibit },
+        s => {
+          aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
+        }),
+      fetch(`${SERVER_URL}/api/odds3t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
       fetch(`${SERVER_URL}/api/odds2t?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
       fetch(`${SERVER_URL}/api/odds3f?jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}`, { signal: AbortSignal.timeout(20000) }),
     ]);
@@ -1995,8 +1826,9 @@ p が 1 未満になるほど薄い組は入れないこと。同じ組を重複
       tag.textContent = 'キャッシュ済み';
       tag.style.display = data.cached ? 'inline' : 'none';
     }
-    let odds3t = odds3tPre || {}, odds2t = {}, odds3f = {};
-    if (!odds3tPre && odds3tResp.status === 'fulfilled' && odds3tResp.value) { try { odds3t = (await odds3tResp.value.json()).odds || {}; } catch {} }
+    // 予想と同じ瞬間のオッズをサーバーが返してくれるのでそれを優先する（表示と期待値がずれない）
+    let odds3t = (data.odds3t && Object.keys(data.odds3t).length) ? data.odds3t : {}, odds2t = {}, odds3f = {};
+    if (!Object.keys(odds3t).length && odds3tResp.status === 'fulfilled' && odds3tResp.value) { try { odds3t = (await odds3tResp.value.json()).odds || {}; } catch {} }
     if (odds2tResp.status === 'fulfilled') { try { odds2t = (await odds2tResp.value.json()).odds || {}; } catch {} }
     if (odds3fResp.status === 'fulfilled') { try { odds3f = (await odds3fResp.value.json()).odds || {}; } catch {} }
     const raw = data.content.map(c=>c.text||'').join('').replace(/```json|```/g,'').trim();
@@ -2005,9 +1837,10 @@ p が 1 未満になるほど薄い組は入れないこと。同じ組を重複
     const r = JSON.parse(jm[0]);
 
     aiText.className = 'ai-text';
+    // AIの生成文はそのまま埋め込まない（共有キャッシュ経由で他人のテキストが届くため）
     aiText.innerHTML =
-      `<strong style="color:var(--accent2)">▶ AI予想レポート</strong><br><br>${r.analysis}<br><br>`+
-      `<strong style="color:var(--gold)">注目: ${r.focus}号艇</strong> — ${r.focus_reason}`;
+      `<strong style="color:var(--accent2)">▶ AI予想レポート</strong><br><br>${escapeHtml(r.analysis)}<br><br>`+
+      `<strong style="color:var(--gold)">注目: ${escapeHtml(r.focus)}号艇</strong> — ${escapeHtml(r.focus_reason)}`;
 
     // 信頼度バッジ（バー + %）
     const confBadge = (pct, color) => {
@@ -2053,7 +1886,7 @@ p が 1 未満になるほど薄い組は入れないこと。同じ組を重複
     // 縦リスト1行分: ① [色ドット] 4-3-5 ◎本命 | 3連単45.6倍 / 単勝3.2倍
     const CIRCLED = ['①','②','③','④','⑤','⑥','⑦','⑧'];
     const comboDots = v => `<span class="pr-dots">${(v||'').split('-').map(n =>
-      `<span class="d-dot" style="background:${lBg[+n-1]||'#555'};color:${lFg[+n-1]||'#fff'}">${n}</span>`
+      `<span class="d-dot" style="background:${lBg[+n-1]||'#555'};color:${lFg[+n-1]||'#fff'}">${escapeHtml(n)}</span>`
     ).join('')}</span>`;
     const rowOdds = v => {
       const o3 = odds3t[v];
@@ -2064,7 +1897,7 @@ p が 1 未満になるほど薄い組は入れないこと。同じ組を重複
       return `<div class="pr-odds">${c3}${c1}</div>`;
     };
     const predRow = (cls, v, i, note) =>
-      `<div class="pred-row ${cls}"><span class="pr-idx">${CIRCLED[i]||i+1}</span>${comboDots(v)}<span class="pr-val">${v}</span><span class="pr-note">${note}</span>${rowOdds(v)}</div>`;
+      `<div class="pred-row ${cls}"><span class="pr-idx">${CIRCLED[i]||i+1}</span>${comboDots(v)}<span class="pr-val">${escapeHtml(v)}</span><span class="pr-note">${escapeHtml(note)}</span>${rowOdds(v)}</div>`;
 
     // 各買い目の期待値を注記に出す（なぜ買うのかを人気ではなく数字で示す）
     const evMap = Object.fromEntries((r.ev_detail || []).map(d => [d.c, d]));
@@ -2086,9 +1919,9 @@ p が 1 未満になるほど薄い組は入れないこと。同じ組を重複
     }
 
     document.getElementById('effCards').innerHTML = `
-      <div class="eff-card"><div class="eff-icon">💨</div><div class="eff-lbl">風況影響</div><div class="eff-text">${r.wind_effect}</div></div>
-      <div class="eff-card"><div class="eff-icon">🌊</div><div class="eff-lbl">潮位影響</div><div class="eff-text">${r.tide_effect}</div></div>
-      <div class="eff-card"><div class="eff-icon">⚙️</div><div class="eff-lbl">モーター</div><div class="eff-text">${r.motor_comment}</div></div>`;
+      <div class="eff-card"><div class="eff-icon">💨</div><div class="eff-lbl">風況影響</div><div class="eff-text">${escapeHtml(r.wind_effect)}</div></div>
+      <div class="eff-card"><div class="eff-icon">🌊</div><div class="eff-lbl">潮位影響</div><div class="eff-text">${escapeHtml(r.tide_effect)}</div></div>
+      <div class="eff-card"><div class="eff-icon">⚙️</div><div class="eff-lbl">モーター</div><div class="eff-text">${escapeHtml(r.motor_comment)}</div></div>`;
 
     // 参考オッズ (2連単・3連複)
     const allCombos = [...matoiList, ...anaList];
@@ -2145,37 +1978,12 @@ async function analyzeMyPick() {
   box.style.display = 'block';
   box.innerHTML = '<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">⚡ 分析中...</div>';
 
-  const racers = raceData?.racers || [];
-  const lines = racers.map(r => {
-    const md = loadMotor(r.lane);
-    const ex = loadExhibit(currentRace, r.lane);
-    if (r.exhibitTime != null) ex.exhibitTime = r.exhibitTime;
-    if (r.exhibitST   != null) ex.st          = r.exhibitST;
-    return `${r.lane}号艇:${r.name||'不明'}(${r.cls||'—'}) 全国${r.allRate||0}/当地${r.localRate||0} 単勝${r.odds!=null?r.odds.toFixed(1)+'倍':'不明'} モーター:${md.grade||'未評価'} 展示:${ex.exhibitTime||'?'} ST:${ex.st||'?'}`;
-  }).join('\n');
-
-  const prompt = `ボートレース専門予想師として、以下の買い目を分析してください。
-
-【${VENUE_NAME} 第${currentRace}レース】
-【買い目】3連単 ${combo}
-
-【出走データ】
-${lines}
-
-以下のJSON形式のみで回答：
-{
-  "verdict": "有力/ありえる/難しい のいずれか",
-  "verdict_reason": "50文字以内の判定理由",
-  "strengths": "この買い目の強み（60文字以内）",
-  "risks": "この買い目のリスク（60文字以内）",
-  "advice": "購入前に確認すべきポイント（80文字以内）",
-  "expected_odds": "推定オッズ帯（例：10〜30倍）"
-}`;
-
   try {
+    // 出走データの収集とプロンプト作成はサーバー側で行う
     const { ok, data } = await fetchPredictWithRetry(
-      { prompt, cacheKey: `pick_${VENUE_JCD}_${document.getElementById('dateInput').value.replace(/-/g,'')}_${currentRace}_${combo}` },
-      s => { box.innerHTML = `<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">⏳ AI分析が混み合っています。残り${s}秒で自動再試行…</div>`; }
+      { jcd: VENUE_JCD, hd: document.getElementById('dateInput').value.replace(/-/g,''), rno: currentRace, combo },
+      s => { box.innerHTML = `<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">⏳ AI分析が混み合っています。残り${s}秒で自動再試行…</div>`; },
+      '/api/advise'
     );
     if (!ok || data.error) throw new Error(data.error || 'APIエラー');
     const text = data.content?.[0]?.text || '';
@@ -2190,18 +1998,18 @@ ${lines}
     box.innerHTML = `<div class="ai-box" style="border-color:rgba(245,193,24,0.3)">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         ${dotHtml}
-        <span style="font-size:15px;font-weight:700;font-family:var(--mono);color:${vColor}">${r.verdict||'—'}</span>
-        ${r.expected_odds ? `<span style="font-size:10px;color:var(--muted);font-family:var(--mono)">${r.expected_odds}</span>` : ''}
+        <span style="font-size:15px;font-weight:700;font-family:var(--mono);color:${vColor}">${escapeHtml(r.verdict||'—')}</span>
+        ${r.expected_odds ? `<span style="font-size:10px;color:var(--muted);font-family:var(--mono)">${escapeHtml(r.expected_odds)}</span>` : ''}
       </div>
-      <div style="font-size:12px;color:var(--fg);margin-bottom:8px">${r.verdict_reason||''}</div>
+      <div style="font-size:12px;color:var(--fg);margin-bottom:8px">${escapeHtml(r.verdict_reason||'')}</div>
       <div style="display:grid;gap:6px">
-        ${r.strengths ? `<div style="font-size:11px"><span style="color:var(--accent2);font-family:var(--mono);font-weight:700">強み</span> ${r.strengths}</div>` : ''}
-        ${r.risks     ? `<div style="font-size:11px"><span style="color:var(--red);font-family:var(--mono);font-weight:700">リスク</span> ${r.risks}</div>` : ''}
-        ${r.advice    ? `<div style="font-size:11px;padding:7px;background:rgba(245,193,24,0.08);border-radius:5px;border-left:3px solid var(--gold)"><span style="color:var(--gold);font-family:var(--mono);font-weight:700">アドバイス</span> ${r.advice}</div>` : ''}
+        ${r.strengths ? `<div style="font-size:11px"><span style="color:var(--accent2);font-family:var(--mono);font-weight:700">強み</span> ${escapeHtml(r.strengths)}</div>` : ''}
+        ${r.risks     ? `<div style="font-size:11px"><span style="color:var(--red);font-family:var(--mono);font-weight:700">リスク</span> ${escapeHtml(r.risks)}</div>` : ''}
+        ${r.advice    ? `<div style="font-size:11px;padding:7px;background:rgba(245,193,24,0.08);border-radius:5px;border-left:3px solid var(--gold)"><span style="color:var(--gold);font-family:var(--mono);font-weight:700">アドバイス</span> ${escapeHtml(r.advice)}</div>` : ''}
       </div>
     </div>`;
   } catch (e) {
-    box.innerHTML = `<div style="color:var(--red);font-size:12px">分析エラー: ${e.message}</div>`;
+    box.innerHTML = `<div style="color:var(--red);font-size:12px">分析エラー: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -2287,10 +2095,8 @@ function tick() {
   document.getElementById('dateInput').value =
     `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
-  loadPrefs();
   buildDememe('dememe1');
   buildDememe('dememe2');
-  updateAdvice();
   buildEntryList([]);
   buildStatsList([]);
   updateFixedBar();
