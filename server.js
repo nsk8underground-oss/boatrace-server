@@ -203,6 +203,7 @@ const testOrigin = (name, prod) =>
 const ORIGIN_BOATRACE = testOrigin('TEST_ORIGIN_BOATRACE', 'https://www.boatrace.jp');
 const ORIGIN_GEMINI   = testOrigin('TEST_ORIGIN_GEMINI',   'https://generativelanguage.googleapis.com/v1beta');
 const ORIGIN_X        = testOrigin('TEST_ORIGIN_X',        'https://api.twitter.com');
+const ORIGIN_JMA      = testOrigin('TEST_ORIGIN_JMA',      'https://www.data.jma.go.jp');
 
 const BASE = `${ORIGIN_BOATRACE}/owpc/pc/race`;
 const UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36';
@@ -1345,11 +1346,12 @@ app.get('/api/all', async (req, res) => {
     // fetchParsedOdds は複数URLを順に試すため最大40秒かかり、
     // フロント側の35秒タイムアウトに間に合わないことがあった。
     // 単勝オッズのURLは2種あるので、順に試さず両方を並列で投げて取れた方を使う
-    const [rlH, o1H, o1Halt, beforeH] = await Promise.all([
+    const [rlH, o1H, o1Halt, beforeH, tideDay] = await Promise.all([
       fetchQuick(`${BASE}/racelist?${q}`, 18000),
       fetchQuick(`${BASE}/oddstf?${q}`, 8000),
       fetchQuick(`${BASE}/odds1t?${q}`, 8000),
       fetchQuick(`${BASE}/beforeinfo?${q}`, 18000),
+      fetchTideDay(jcd, hd),
     ]);
     const rl = rlH ? parseRacelist(rlH, jcd, hd, rno) : null;
     if (!rl || rl.racers.length === 0) return res.status(404).json({ error: '出走データがありません。開催日・場コードを確認してください。平和島=04 / 芦屋=21' });
@@ -1366,7 +1368,11 @@ app.get('/api/all', async (req, res) => {
       exhibitST:   before.exhibit[r.lane]?.st || null,
       course:      before.exhibit[r.lane]?.course || r.lane,
     }));
-    const responseData = { ...rl, weather: before.weather };
+    // 潮位は boatrace.jp に無いので気象庁の推算値を天候情報に足して返す
+    const responseData = { ...rl, weather: {
+      ...before.weather,
+      tide: tideLine(tideDay, closeMinOf(rl.schedule, rno)) || '',
+    } };
     for (const [k, v] of raceCache) if (Date.now() >= v.exp) raceCache.delete(k);
     raceCache.set(ck, { data: responseData, exp: Date.now() + 120000 });
     res.json(responseData);
@@ -1566,6 +1572,156 @@ async function lookupSharedPredict(cacheKey) {
   }
   return null;
 }
+
+/* ======================== 潮位（気象庁の潮位表） ======================== */
+// 平和島や江戸川のような汽水の水面では、潮の高さと流れがターンの決まり方を変える。
+// boatrace.jp は潮位を出さないので、気象庁の推算値を読む。
+// 1地点1年ぶんが1ファイル、1行が1日の固定長テキスト。
+// 書式: https://www.data.jma.go.jp/kaiyou/db/tide/suisan/readme.html
+
+// 場コード → 気象庁の地点記号。環境変数 TIDE_STATIONS（JSON）で追加・変更できる。
+//   例: TIDE_STATIONS={"22":"HD","24":"OM"}   空文字を指定するとその場は無効になる
+const TIDE_STATIONS = (() => {
+  const m = { '03': 'TK', '04': 'TK' };   // 江戸川・平和島 → 東京
+  try {
+    for (const [k, v] of Object.entries(JSON.parse(process.env.TIDE_STATIONS || '{}'))) {
+      const jcd = String(k).padStart(2, '0');
+      if (!/^\d{2}$/.test(jcd)) continue;
+      const code = String(v ?? '').trim().toUpperCase();
+      if (/^[A-Z0-9]{2}$/.test(code)) m[jcd] = code;
+      else if (!code) delete m[jcd];
+    }
+  } catch (e) { console.warn('TIDE_STATIONS を読めませんでした:', e.message); }
+  return m;
+})();
+
+// 桁位置は気象庁の仕様どおり。
+//   1-72 毎時潮位(3桁×24, cm) / 73-78 年月日 / 79-80 地点記号
+//   81-108 満潮(時刻4桁+潮位3桁)×4 / 109-136 干潮×4   ※欠測は 9999 / 999
+function parseTideLine(line) {
+  if (!line || line.length < 108) return null;
+  const n = s => { const v = parseInt(s, 10); return Number.isNaN(v) ? null : v; };
+  const hourly = [];
+  for (let i = 0; i < 24; i++) {
+    const v = n(line.slice(i * 3, i * 3 + 3));
+    hourly.push(v === 999 ? null : v);
+  }
+  const peaks = off => {
+    const out = [];
+    for (let i = 0; i < 4; i++) {
+      const t = line.slice(off + i * 7, off + i * 7 + 4);
+      const v = n(line.slice(off + i * 7 + 4, off + i * 7 + 7));
+      const hh = n(t.slice(0, 2)), mi = n(t.slice(2, 4));
+      if (t === '9999' || v === null || v === 999 || hh === null || mi === null || hh > 23 || mi > 59) continue;
+      out.push({ min: hh * 60 + mi, level: v });
+    }
+    return out.sort((a, b) => a.min - b.min);
+  };
+  const [yy, mm, dd] = [n(line.slice(72, 74)), n(line.slice(74, 76)), n(line.slice(76, 78))];
+  if (yy === null || mm === null || dd === null) return null;
+  const p2 = v => String(v).padStart(2, '0');
+  return {
+    hourly,
+    ymd: `20${p2(yy)}${p2(mm)}${p2(dd)}`,
+    code: line.slice(78, 80).trim().toUpperCase(),
+    highs: peaks(80),
+    lows: line.length >= 136 ? peaks(108) : [],
+  };
+}
+
+// 年ファイルはその年のあいだ変わらないので、取得したテキストはインスタンス内に置いておく
+const tideYearCache = new Map();   // `${year}:${code}` -> { text, exp }
+
+// 指定日の潮位データを返す。取れなければ null（潮位なしでも予想は成立する）
+async function fetchTideDay(jcd, hd) {
+  const code = TIDE_STATIONS[String(jcd)];
+  if (!code || !/^\d{8}$/.test(hd)) return null;
+  const key = `tide:${code}:${hd}`;
+  try {
+    const cached = await redisCmd('GET', key);
+    if (cached) { const d = JSON.parse(cached); if (d && Array.isArray(d.hourly)) return d; }
+  } catch {}
+
+  const year = hd.slice(0, 4);
+  const ck = `${year}:${code}`;
+  const mem = tideYearCache.get(ck);
+  let text = mem && Date.now() < mem.exp ? mem.text : null;
+  if (!text) {
+    text = await fetchQuick(`${ORIGIN_JMA}/kaiyou/data/db/tide/suisan/txt/${year}/${code}.txt`, 12000);
+    if (!text) return null;
+    tideYearCache.set(ck, { text, exp: Date.now() + 43200000 });
+  }
+  for (const raw of text.split('\n')) {
+    const d = parseTideLine(raw.replace(/\r$/, ''));
+    // 別の地点・別の日を取り違えないよう、行に書かれた地点と日付が一致することを確かめる
+    if (!d || d.ymd !== hd || d.code !== code) continue;
+    try { await redisCmd('SET', key, JSON.stringify(d), 'EX', '604800'); } catch {}
+    return d;
+  }
+  return null;
+}
+
+const tideHhmm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
+// 締切時点の潮位と、そのとき潮が上げているか下げているかを1行にまとめる。
+// closeMin は締切時刻（0時からの分）。無ければその日の満潮・干潮だけを返す
+function tideLine(d, closeMin) {
+  if (!d || !Array.isArray(d.hourly)) return '';
+  const peakStr = (label, arr) => arr.length ? `${label}${arr.map(p => `${tideHhmm(p.min)}(${p.level}cm)`).join('/')}` : '';
+  const day = [peakStr('満潮', d.highs), peakStr('干潮', d.lows)].filter(Boolean).join(' ');
+  if (closeMin == null) return day;
+
+  const h = Math.max(0, Math.min(23, Math.floor(closeMin / 60)));
+  const a = d.hourly[h];
+  if (a == null) return day;
+  const b = d.hourly[Math.min(23, h + 1)];
+  const level = b == null ? a : Math.round(a + (b - a) * ((closeMin % 60) / 60));
+
+  const all = [...d.highs.map(p => ({ ...p, k: '満潮' })), ...d.lows.map(p => ({ ...p, k: '干潮' }))]
+    .sort((x, y) => x.min - y.min);
+  const near = all.find(p => Math.abs(p.min - closeMin) <= 30);
+  const next = all.find(p => p.min > closeMin);
+  // 次に来るのが満潮なら上げ潮、干潮なら下げ潮。転流の前後30分は「前後」とだけ言う
+  const state = near ? `${near.k}前後`
+    : next ? `${next.k === '満潮' ? '上げ潮' : '下げ潮'}・${next.k}${tideHhmm(next.min)}まで${next.min - closeMin}分`
+    : '';
+  return `締切時点${level}cm${state ? `（${state}）` : ''}${day ? ` 本日 ${day}` : ''}`;
+}
+
+// 締切時刻表から、そのレースの締切を0時からの分に直す
+function closeMinOf(schedule, rno) {
+  const s = (schedule || []).find(x => Number(x.rno) === Number(rno));
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s?.time || ''));
+  return m ? +m[1] * 60 + +m[2] : null;
+}
+
+// 潮位の取得が正しいか確かめるための窓口。
+// debug=1 で気象庁のファイルから読んだ生の行も返すので、公式サイトの値と突き合わせられる
+app.get('/api/tide', async (req, res) => {
+  const jcd = String(req.query.jcd || '');
+  const hd  = String(req.query.hd || '');
+  if (!VENUES[jcd])        return res.status(400).json({ error: '会場コードが不正です' });
+  if (!/^\d{8}$/.test(hd)) return res.status(400).json({ error: '日付が不正です' });
+  const code = TIDE_STATIONS[jcd];
+  if (!code) return res.json({ jcd, venue: VENUES[jcd], station: null, note: 'この場には潮位の地点が設定されていません' });
+  try {
+    const d = await fetchTideDay(jcd, hd);
+    if (!d) return res.json({ jcd, venue: VENUES[jcd], station: code, hd, error: '潮位データを取得できませんでした' });
+    const rno = parseInt(req.query.rno, 10);
+    const closeMin = (rno >= 1 && rno <= 12) ? closeMinOf(await getSchedule(jcd, hd), rno) : null;
+    const out = {
+      jcd, venue: VENUES[jcd], station: code, hd,
+      source: `${ORIGIN_JMA}/kaiyou/data/db/tide/suisan/txt/${hd.slice(0, 4)}/${code}.txt`,
+      highs: d.highs.map(p => ({ time: tideHhmm(p.min), level: p.level })),
+      lows:  d.lows.map(p  => ({ time: tideHhmm(p.min), level: p.level })),
+      text: tideLine(d, closeMin),
+    };
+    if (req.query.debug === '1') out.hourly = d.hourly;
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // 共有予想の読み取り専用API: 他ユーザーが生成済みの予想があれば返す（Gemini APIは消費しない）
 app.get('/api/predict-shared', async (req, res) => {
@@ -1994,7 +2150,7 @@ function motorLine(r) {
   return parts.join(' ');
 }
 
-// opts: { fixedFirst } — アプリから1着固定の指定があれば足す。
+// opts: { fixedFirst, tide } — 1着固定の指定と、気象庁から取った潮位があれば足す。
 // プロンプト本体はサーバーだけが組み立てる（アプリから文面を受け取ると共有キャッシュを汚せるため）
 function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
   const lines = racers.map(r =>
@@ -2012,7 +2168,8 @@ function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
   return `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
 【${venue} 第${rno}レース】
-天候:${weather.sky || '不明'} 風向:${weather.windDir || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm
+天候:${weather.sky || '不明'} 風向:${weather.windDir || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm${opts.tide ? `
+潮位:${opts.tide}（気象庁の推算値）` : ''}
 （コースは展示で確定した進入。「未定」は枠なり想定）${fix}
 
 【出走表（boatrace.jp 実データ）】
@@ -2113,11 +2270,12 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   // 4種を並列取得（所要時間は最も遅い1本ぶん）。
   // 開催ピーク時の boatrace.jp は10秒では返らないことがあるため、
   // 予想に必須の出走表・直前情報は長めに、無くても成立するオッズは短めにする
-  const [rlH, beforeH, o1H, o3H] = await Promise.all([
+  const [rlH, beforeH, o1H, o3H, tideDay] = await Promise.all([
     fetchQuick(`${BASE}/racelist?${q}`, 18000),
     fetchQuick(`${BASE}/beforeinfo?${q}`, 18000),
     fetchQuick(`${BASE}/oddstf?${q}`, 8000),
     fetchQuick(`${BASE}/odds3t?${q}`, 8000),
+    fetchTideDay(jcd, hd),
   ]);
   const rl = rlH ? parseRacelist(rlH, jcd, hd, rno) : null;
   if (!rl || !rl.racers.length) return { error: '出走データなし' };
@@ -2146,8 +2304,8 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   }
   const usedManual = Object.keys(manual).length > 0;
 
-  // v6: 進入コース・風向をプロンプトに加えたため、それ以前の予想は使い回さない
-  const cacheKey = `v6_${jcd}_${hd}_${rno}_${opts.fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
+  // v7: 潮位をプロンプトに加えたため、それ以前の予想は使い回さない
+  const cacheKey = `v7_${jcd}_${hd}_${rno}_${opts.fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
   const cached = usedManual ? null : await lookupSharedPredict(cacheKey);
   if (cached) {
     try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, envelope: cached, schedule: rl.schedule, odds3t }; } catch {}
@@ -2170,7 +2328,11 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
     motorInfo: motors[r.motorNo] || null,
   }));
 
-  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {}, opts);
+  // 締切時刻は出走表から取れるが、表の解析に失敗することがあるので保存済みの時刻表も見る
+  let closeMin = closeMinOf(rl.schedule, rno);
+  if (closeMin == null) { try { closeMin = closeMinOf(await getSchedule(jcd, hd), rno); } catch {} }
+  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {},
+    { ...opts, tide: tideLine(tideDay, closeMin) });
   const g = await callGemini(prompt, budgetMs);
   if (!g.ok) return { error: g.body?.error || '予想生成失敗', status: g.status, body: g.body };
   // 買い目はAIに選ばせず、AIの確率見積もりと実オッズの期待値で決める。
@@ -2958,5 +3120,6 @@ if (process.env.NODE_ENV === 'test') {
   module.exports._internals = {
     compressTrifecta, expandTrifectaToken, normTrifecta,
     applyEV, buildRaceTweet, buildResultTweet, buildAutoPrompt, marketImplied,
+    parseTideLine, tideLine, closeMinOf,
   };
 }

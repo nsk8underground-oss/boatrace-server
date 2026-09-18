@@ -345,6 +345,10 @@ input,select{font-family:var(--sans);}
         <div class="cond-lbl">風向</div>
         <div class="cond-val live" id="condWindDir">—</div>
       </div>
+      <div class="cond-box" style="grid-column:1/-1">
+        <div class="cond-lbl">潮位 <span style="color:var(--muted);font-size:9px">気象庁推算</span></div>
+        <div class="cond-val live" id="condTide" style="font-size:11px;line-height:1.5">—</div>
+      </div>
       <div class="cond-box">
         <div class="cond-lbl">風速</div>
         <div class="cond-val live" id="condWind">—</div>
@@ -514,7 +518,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.39';
+const APP_VERSION = 'v3.40';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -1479,6 +1483,9 @@ function updateWeather(w) {
   set('condWind',  w.wind  != null && w.wind  ? `${w.wind}m/s`  : '—');
   set('condWater', w.water != null && w.water ? `${w.water}℃`   : '—');
   set('condWave',  w.wave  != null && w.wave  ? `${w.wave}cm`   : '—');
+  // 潮位を返すのは /api/all だけ。展示の再取得（/api/before）で消えないよう、
+  // 値が入っているときだけ書き換える
+  if (w.tide !== undefined) set('condTide', w.tide || '—');
   const wdEl = document.getElementById('condWindDir');
   if (wdEl) {
     const arr = w.windDir ? windArrow(w.windDir) : '';

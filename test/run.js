@@ -36,6 +36,7 @@ async function main() {
     TEST_ORIGIN_BOATRACE: stubUrl,
     TEST_ORIGIN_GEMINI: `${stubUrl}/gemini`,
     TEST_ORIGIN_X: stubUrl,
+    TEST_ORIGIN_JMA: stubUrl,
     UPSTASH_REDIS_REST_URL: `${stubUrl}/redis`,
     UPSTASH_REDIS_REST_TOKEN: 'stub-token',
     GEMINI_API_KEY: 'stub-key',
@@ -84,6 +85,7 @@ async function main() {
   const seedDay = async (gemini, rnos, lead = 20) => {
     const del = [`xlog:${hd}`, `xlogl:${hd}`, `xcount:${hd}`, `xskip:${hd}`, `xresult:${hd}`, `calibdone:${hd}`, 'xhold'];
     for (let r = 1; r <= 12; r++) del.push(`xposted:${hd}:04:${r}`, `calibsrc:${hd}:04:${r}`);
+    del.push(`tide:TK:${hd}`);
     await seed({
       del,
       kv: {
@@ -130,9 +132,9 @@ async function main() {
 
     /* ============================================================ */
     console.log('\n【3】/api/predict はアプリの文面を受け付けない');
-    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v6_04_${hd}_12_0_ex1` });
+    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v7_04_${hd}_12_0_ex1` });
     check('旧形式（prompt指定）は400で拒否される', legacy.status === 400, `status=${legacy.status} ${JSON.stringify(legacy.body)}`);
-    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v6_04_${hd}_12_0_ex1`]), null);
+    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v7_04_${hd}_12_0_ex1`]), null);
     for (const [label, body] of [
       ['会場コードが不正', { jcd: '99', hd, rno: 1 }],
       ['日付が不正', { jcd: '04', hd: 'x', rno: 1 }],
@@ -150,7 +152,9 @@ async function main() {
     check('風向は公式の実測が入る', st3.lastPrompt.includes('風向:北東'), st3.lastPrompt.slice(0, 200));
     check('手動の選択条件は渡さない', !st3.lastPrompt.includes('選択条件'));
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
-    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v6_04_${hd}_12_0_ex1`])));
+    check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm（(上げ潮|下げ潮|満潮前後|干潮前後)/.test(st3.lastPrompt),
+      (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
+    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v7_04_${hd}_12_0_ex1`])));
     const p2 = await postJ('/api/predict', { jcd: '04', hd, rno: 12 });
     check('2回目はキャッシュが返りGeminiを呼ばない', p2.body.cached === true && (await stat()).geminiCalls === before3 + 1);
     check('表示用の3連単オッズも一緒に返る', Object.keys(p2.body.odds3t || {}).length > 50);
@@ -163,7 +167,40 @@ async function main() {
     check('診断のプロンプトもサーバーが作る', (await stat()).lastPrompt.includes('【買い目】3連単 4-2-1'));
 
     /* ============================================================ */
-    console.log('\n【4】自動投稿が同じレースを二重に処理しない');
+    console.log('\n【4】潮位（気象庁の潮位表）');
+    const { parseTideLine, tideLine } = require('../server.js')._internals;
+    // 仕様どおりの固定長1行（毎時24値 / 年月日 / 地点 / 満潮4組 / 干潮4組）
+    const SAMPLE =
+      [100,110,125,140,155,168,178,184,186,183,175,164,150,135,120,106, 95, 88, 86, 90,100,114,130,146]
+        .map(v => String(v).padStart(3, ' ')).join('') +
+      '260918TK' + '0820186' + '9999999' + '9999999' + '9999999'
+                 + '1830 86' + '9999999' + '9999999' + '9999999';
+    const td = parseTideLine(SAMPLE);
+    eq('1行の桁数は136', SAMPLE.length, 136);
+    eq('日付を読める', td.ymd, '20260918');
+    eq('地点記号を読める', td.code, 'TK');
+    eq('毎時潮位を24個読める', td.hourly.length, 24);
+    eq('0時の潮位', td.hourly[0], 100);
+    eq('満潮を読める', td.highs, [{ min: 8 * 60 + 20, level: 186 }]);
+    eq('干潮を読める', td.lows,  [{ min: 18 * 60 + 30, level: 86 }]);
+    eq('欠測(9999)は満潮として数えない', td.highs.length, 1);
+    check('短すぎる行は捨てる', parseTideLine('123') === null);
+    // 締切12:30 → 12時(150cm)と13時(135cm)の間なので約142cm、次は18:30の干潮なので下げ潮
+    const line1230 = tideLine(td, 12 * 60 + 30);
+    check('締切時点の潮位を毎時値から補間する', /締切時点14[0-9]cm/.test(line1230), line1230);
+    check('次が干潮なら下げ潮と言う', line1230.includes('下げ潮'), line1230);
+    check('満潮・干潮の時刻も載る', line1230.includes('満潮08:20(186cm)') && line1230.includes('干潮18:30(86cm)'), line1230);
+    // 満潮の前後30分は向きを断定せず「満潮前後」とする
+    check('転流の前後は前後とだけ言う', tideLine(td, 8 * 60 + 35).includes('満潮前後'), tideLine(td, 8 * 60 + 35));
+    check('潮位が取れない場でも落ちない', tideLine(null, 600) === '');
+    const tideApi = await getJ(`/api/tide?jcd=04&hd=${hd}`);
+    check('/api/tide が東京の潮位を返す', tideApi.status === 200 && tideApi.body.station === 'TK' && tideApi.body.highs.length > 0,
+      JSON.stringify(tideApi.body).slice(0, 200));
+    const tideNone = await getJ(`/api/tide?jcd=01&hd=${hd}`);
+    check('地点未設定の場はその旨を返す', tideNone.status === 200 && tideNone.body.station === null, JSON.stringify(tideNone.body));
+
+    /* ============================================================ */
+    console.log('\n【5】自動投稿が同じレースを二重に処理しない');
     await seedDay(AI_EDGE, [1, 2, 3, 4]);
     const b5 = await stat();
     const runs = await Promise.all([cron('mode=races'), cron('mode=races'), cron('mode=races')]);
@@ -174,7 +211,7 @@ async function main() {
     eq('履歴も処理したレース数ぶん残る', ((await redis(['LRANGE', `xlogl:${hd}`, 0, -1])) || []).length, picked.length);
 
     /* ============================================================ */
-    console.log('\n【5】見送りは投稿枠を食わない');
+    console.log('\n【6】見送りは投稿枠を食わない');
     await seedDay(AI_SAME, [5, 6, 7, 8]);
     const kinds = [];
     for (let i = 0; i < 4; i++) {
@@ -186,7 +223,7 @@ async function main() {
     check('見送りは見送りカウンタで数える', parseInt(await redis(['GET', `xskip:${hd}`]) || '0', 10) > 0);
 
     /* ============================================================ */
-    console.log('\n【6】結果まとめと校正の記録');
+    console.log('\n【7】結果まとめと校正の記録');
     await seedDay(AI_EDGE, [9, 10, 11]);
     const runs6 = [];
     for (let i = 0; i < 3; i++) runs6.push(await cron('mode=races'));
@@ -218,7 +255,7 @@ async function main() {
     eq('同じ日を2度集計しても記録は増えない', res2.calib?.added ?? 0, 0);
 
     /* ============================================================ */
-    console.log('\n【7】結果ツイートの文面');
+    console.log('\n【8】結果ツイートの文面');
     const tw = buildResultTweet(hd, [
       { rno: 1, venue: '平和島', hit: true, combo: '1-2-3', pay: 1200, points: 4 },
       { rno: 2, venue: '平和島', hit: false, points: 4 },
@@ -228,7 +265,7 @@ async function main() {
     check('X の上限280（全角2文字）に収まる',
       [...tw].reduce((s, c) => s + (c.codePointAt(0) > 0x1100 ? 2 : 1), 0) <= 280, `長さ=${tw.length}`);
     /* ============================================================ */
-    console.log('\n【8】Basic認証の総当たり対策');
+    console.log('\n【9】Basic認証の総当たり対策');
     const badAuth = 'Basic ' + Buffer.from('guest:0000').toString('base64');
     let blocked = 0, lastStatus = 0;
     for (let i = 0; i < 12; i++) {
