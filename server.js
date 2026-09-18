@@ -108,12 +108,56 @@ app.use((req, res, next) => {
   next();
 });
 
+// ---- Basic認証の総当たり対策 ----
+// パスワードが短いと総当たりが現実的に成立してしまうので、
+// 間違いが続いたIPを一定時間締め出す。
+// 認証に成功する通常アクセスではRedisに一切触らないため、表示速度には影響しない。
+const AUTH_FAIL_MAX  = 8;     // この回数まちがえたら
+const AUTH_BLOCK_SEC = 600;   // この秒数だけ締め出す
+const authFails  = new Map(); // ip -> { n, exp }  失敗回数（このインスタンス内）
+const authBlocks = new Map(); // ip -> 解除時刻(ms)
+
+function clientIp(req) {
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return fwd || req.socket?.remoteAddress || 'unknown';
+}
+
+function authBlockedUntil(ip) {
+  const t = authBlocks.get(ip);
+  if (!t) return 0;
+  if (t <= Date.now()) { authBlocks.delete(ip); return 0; }
+  return t;
+}
+
+// 認証失敗を数える。パスワードを送ってきた場合だけ数える。
+// （未入力の初回アクセスも401になるので、それを数えると誰もログインできなくなる）
+async function noteAuthFailure(req) {
+  if (!req.headers.authorization) return;
+  const ip  = clientIp(req);
+  const now = Date.now();
+  if (authFails.size > 2000) { for (const [k, v] of authFails) if (v.exp <= now) authFails.delete(k); }
+  const rec = authFails.get(ip);
+  let total = (rec && rec.exp > now) ? rec.n + 1 : 1;
+  authFails.set(ip, { n: total, exp: now + AUTH_BLOCK_SEC * 1000 });
+  // Vercelは同じ相手でも実行インスタンスが変わるため、回数はRedisで共有する
+  if (REDIS_ENABLED) {
+    try {
+      const key = `authfail:${ip}`;
+      const v = await redisCmd('INCR', key);
+      if (v === 1) await redisCmd('EXPIRE', key, AUTH_BLOCK_SEC);
+      if (typeof v === 'number' && v > total) total = v;
+    } catch {}
+  }
+  if (total >= AUTH_FAIL_MAX) authBlocks.set(ip, now + AUTH_BLOCK_SEC * 1000);
+}
+
 // パスワード保護（全ページに適用）
 const siteAuth = basicAuth({
   authorizer: (user, pass) =>
     basicAuth.safeCompare(user, 'guest') & basicAuth.safeCompare(pass, SITE_PASSWORD),
   challenge: true,
   realm: 'BoatRace Dashboard',
+  unauthorizedResponse: req => { noteAuthFailure(req).catch(() => {}); return 'Unauthorized'; },
 });
 
 // 自動投稿だけは、正しい CRON_SECRET があれば Basic認証を免除する。
@@ -123,6 +167,12 @@ app.use((req, res, next) => {
   if (req.path === '/api/auto-post' && CRON_SECRET) {
     const s = req.get('x-cron-secret') || (req.query && req.query.secret) || '';
     if (s === CRON_SECRET) return next();
+  }
+  const until = authBlockedUntil(clientIp(req));
+  if (until) {
+    res.set('Retry-After', String(Math.ceil((until - Date.now()) / 1000)));
+    return res.status(429).type('text/plain; charset=utf-8')
+      .send('パスワードの誤りが続いたため、しばらくアクセスを制限しています。時間をおいて再度お試しください。');
   }
   return siteAuth(req, res, next);
 });
@@ -146,7 +196,15 @@ const VENUES = {
   '16':'児島','17':'宮島','18':'徳山','19':'下関','20':'若松',
   '21':'芦屋','22':'福岡','23':'唐津','24':'大村'
 };
-const BASE = 'https://www.boatrace.jp/owpc/pc/race';
+// 外部サービスの宛先。テスト時（NODE_ENV=test）だけローカルのスタブに差し替えられる。
+// 本番では環境変数を見ないので、設定ミスで外部通信が別の宛先へ向くことはない
+const testOrigin = (name, prod) =>
+  (process.env.NODE_ENV === 'test' && process.env[name]) ? process.env[name] : prod;
+const ORIGIN_BOATRACE = testOrigin('TEST_ORIGIN_BOATRACE', 'https://www.boatrace.jp');
+const ORIGIN_GEMINI   = testOrigin('TEST_ORIGIN_GEMINI',   'https://generativelanguage.googleapis.com/v1beta');
+const ORIGIN_X        = testOrigin('TEST_ORIGIN_X',        'https://api.twitter.com');
+
+const BASE = `${ORIGIN_BOATRACE}/owpc/pc/race`;
 const UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36';
 
 async function fetchHtml(url, retries = 3) {
@@ -730,8 +788,8 @@ app.get('/api/debug-fetch', async (req, res) => {
     'racelist(平和島)': `${BASE}/racelist?jcd=04&hd=${hd}&rno=1`,
     'index?hd=':        `${BASE}/index?hd=${hd}`,
     'index':            `${BASE}/index`,
-    'race/':            'https://www.boatrace.jp/owpc/pc/race/',
-    'top':              'https://www.boatrace.jp/',
+    'race/':            `${ORIGIN_BOATRACE}/owpc/pc/race/`,
+    'top':              `${ORIGIN_BOATRACE}/`,
   };
   const entries = Object.entries(targets);
   const results = await Promise.all(entries.map(async ([name, url]) => {
@@ -1323,7 +1381,7 @@ app.get('/api/ping-boatrace', async (req, res) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     const start = Date.now();
-    const r = await fetch('https://www.boatrace.jp/owpc/pc/race/racelist?jcd=04&hd=20260520&rno=1', {
+    const r = await fetch(`${BASE}/racelist?jcd=04&hd=20260520&rno=1`, {
       headers: { 'User-Agent': UA },
       signal: controller.signal,
     });
@@ -1389,7 +1447,7 @@ app.get('/api/debug', async (req, res) => {
 app.get('/api/list-models', async (req, res) => {
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY未設定' });
   try {
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models', { headers: { 'x-goog-api-key': GEMINI_API_KEY } });
+    const r = await fetch(`${ORIGIN_GEMINI}/models`, { headers: { 'x-goog-api-key': GEMINI_API_KEY } });
     const d = await r.json();
     const names = (d.models || []).map(m => m.name);
     res.json({ models: names, raw_error: d.error });
@@ -1456,7 +1514,7 @@ app.get('/api/ai-health', async (req, res) => {
       if (model.startsWith('gemini-2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10000);
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      const r = await fetch(`${ORIGIN_GEMINI}/models/${model}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
         body: JSON.stringify({
@@ -1538,7 +1596,7 @@ async function callGemini(prompt, budgetMs = 26000) {
     for (const model of PREDICT_MODELS) {
       const budget = deadline - Date.now();
       if (budget < 3000) { lastTransient = true; break; }
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const url = `${ORIGIN_GEMINI}/models/${model}:generateContent`;
       const generationConfig = {
         // 確率の見積もりに使うので低めにする。0.7だと同じレースでも実行ごとに p がぶれ、
         // 期待値の選定にノイズが乗る
@@ -1648,36 +1706,107 @@ async function storePredict(cacheKey, result) {
 }
 
 // AI予想エンドポイント（Gemini）
+// プロンプト・キャッシュキー・オッズはすべてサーバーが組み立てる。
+// 以前はアプリから受け取っていたが、それだと任意の文面を共有キャッシュに書き込めてしまい、
+// BOTの投稿内容まで他人に差し替えられる余地があった
 app.post('/api/predict', async (req, res) => {
-  const { prompt, cacheKey, by, odds3t } = req.body;
-  if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'promptが必要です' });
-  if (prompt.length > 8000) return res.status(400).json({ error: 'promptが長すぎます（8000文字以内）' });
+  const b = req.body || {};
+  if (b.prompt && !b.jcd) {
+    return res.status(400).json({ error: 'アプリの更新が必要です。ページを再読み込みしてください' });
+  }
+  const jcd = String(b.jcd || '');
+  const hd  = String(b.hd || '');
+  const rno = parseInt(b.rno, 10);
+  if (!VENUES[jcd])            return res.status(400).json({ error: '会場コードが不正です' });
+  if (!/^\d{8}$/.test(hd))     return res.status(400).json({ error: '日付が不正です' });
+  if (!(rno >= 1 && rno <= 12)) return res.status(400).json({ error: 'レース番号が不正です' });
+  // 選択肢はアプリのセレクトボックス由来。改行や長文でプロンプトを乗っ取られないよう切り詰める
+  const oneLine = v => String(v ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 20);
+  const ff = parseInt(b.fixedFirst, 10);
 
-  // 共有キャッシュにあればGemini不要（APIキー未設定でも返せる）
-  if (cacheKey) {
+  try {
+    const got = await getOrCreatePrediction(jcd, hd, rno, 26000, {
+      fixedFirst: (ff >= 1 && ff <= 6) ? ff : 0,
+      wind: oneLine(b.wind),
+      tide: oneLine(b.tide),
+      by:   oneLine(b.by).slice(0, 12),
+      exhibit: b.exhibit,
+    });
+    if (got.error) return res.status(got.status || 500).json(got.body || { error: got.error });
+    res.json({ ...got.envelope, cached: !!got.cached, odds3t: got.odds3t || {} });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 買い目診断（自分で決めた3連単1点をAIに見てもらう）。
+// こちらもプロンプトはサーバーで組み立てる
+app.post('/api/advise', async (req, res) => {
+  const b = req.body || {};
+  const jcd = String(b.jcd || '');
+  const hd  = String(b.hd || '');
+  const rno = parseInt(b.rno, 10);
+  const combo = normTrifecta(b.combo);
+  if (!VENUES[jcd])             return res.status(400).json({ error: '会場コードが不正です' });
+  if (!/^\d{8}$/.test(hd))      return res.status(400).json({ error: '日付が不正です' });
+  if (!(rno >= 1 && rno <= 12)) return res.status(400).json({ error: 'レース番号が不正です' });
+  if (!combo)                   return res.status(400).json({ error: '買い目が不正です' });
+
+  const cacheKey = `pick_${jcd}_${hd}_${rno}_${combo}`;
+  try {
     const hit = await lookupSharedPredict(cacheKey);
     if (hit) return res.json({ ...hit, cached: true });
-  }
 
-  // 3連単オッズを受け取れたら、買い目の選定はここで期待値から行う。
-  // BOTと同じ関数を通すので、共有キャッシュ越しに両方が同じ買い目を見る
-  let odds = null;
-  if (odds3t && typeof odds3t === 'object' && !Array.isArray(odds3t)) {
-    const ent = Object.entries(odds3t).slice(0, 120);
-    odds = {};
-    for (const [k, v] of ent) {
-      const c = normTrifecta(k), o = Number(v);
-      if (c && isFinite(o) && o > 0) odds[c] = o;
-    }
-  }
+    const q = `jcd=${jcd}&hd=${hd}&rno=${rno}`;
+    const [rlH, beforeH, o1H] = await Promise.all([
+      fetchQuick(`${BASE}/racelist?${q}`, 15000),
+      fetchQuick(`${BASE}/beforeinfo?${q}`, 12000),
+      fetchQuick(`${BASE}/oddstf?${q}`, 8000),
+    ]);
+    const rl = rlH ? parseRacelist(rlH, jcd, hd, rno) : null;
+    if (!rl || !rl.racers.length) return res.status(502).json({ error: '出走データを取得できませんでした' });
+    const before = beforeH ? parseBeforeinfo(beforeH) : { weather: {}, exhibit: {} };
+    const odds1  = o1H ? (parseOdds1t(o1H).odds || {}) : {};
+    let motors = {};
+    try {
+      const raw = await redisCmd('HGETALL', `motors:${jcd}`);
+      if (Array.isArray(raw)) for (let i = 0; i < raw.length; i += 2) { try { motors[raw[i]] = JSON.parse(raw[i + 1]); } catch {} }
+    } catch {}
 
-  const r = await callGemini(prompt);
-  if (!r.ok) return res.status(r.status).json(r.body);
-  let text = r.jsonText;
-  try { text = JSON.stringify(applyEV(JSON.parse(r.jsonText), odds)); } catch {}
-  const result = { content: [{ text }], model: r.model, at: new Date().toISOString(), by: String(by || '').slice(0, 12) };
-  await storePredict(cacheKey, result);
-  res.json(result);
+    const lines = rl.racers.map(r => {
+      const ex = before.exhibit[r.lane] || {};
+      const o  = odds1[r.lane];
+      return `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}) 全国${r.allRate || 0}/当地${r.localRate || 0} ` +
+        `単勝${o != null ? o.toFixed(1) + '倍' : '不明'} モーター:${motors[r.motorNo]?.grade || '未評価'} ` +
+        `展示:${ex.exhibitTime ?? '?'} ST:${ex.st ?? '?'}`;
+    }).join('\n');
+
+    const prompt = `ボートレース専門予想師として、以下の買い目を分析してください。
+
+【${VENUES[jcd]} 第${rno}レース】
+【買い目】3連単 ${combo}
+
+【出走データ】
+${lines}
+
+以下のJSON形式のみで回答：
+{
+  "verdict": "有力/ありえる/難しい のいずれか",
+  "verdict_reason": "50文字以内の判定理由",
+  "strengths": "この買い目の強み（60文字以内）",
+  "risks": "この買い目のリスク（60文字以内）",
+  "advice": "購入前に確認すべきポイント（80文字以内）",
+  "expected_odds": "推定オッズ帯（例：10〜30倍）"
+}`;
+
+    const g = await callGemini(prompt, 26000);
+    if (!g.ok) return res.status(g.status).json(g.body);
+    const result = { content: [{ text: g.jsonText }], model: g.model, at: new Date().toISOString(), by: '' };
+    await storePredict(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 /* ======================== X (Twitter) AUTO POST ======================== */
@@ -1730,7 +1859,7 @@ function xLen(str) {
 
 async function postToX(text) {
   if (!X_ENABLED) return { ok: false, error: 'X credentials not set' };
-  const url = 'https://api.twitter.com/2/tweets';
+  const url = `${ORIGIN_X}/2/tweets`;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
@@ -1778,7 +1907,7 @@ app.get('/api/x-health', async (req, res) => {
   if (!X_ENABLED) {
     return res.json({ ok: false, cause: 'X認証情報が未設定', fix: 'Vercelの環境変数に4つすべて設定して再デプロイしてください', env });
   }
-  const url = 'https://api.twitter.com/2/users/me';
+  const url = `${ORIGIN_X}/2/users/me`;
   try {
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), 12000);
@@ -1867,7 +1996,9 @@ function motorLine(r) {
   return parts.join(' ');
 }
 
-function buildAutoPrompt(venue, rno, racers, weather) {
+// opts: { fixedFirst, wind, tide } — アプリから1着固定や風向・潮位の指定があれば足す。
+// プロンプト本体はサーバーだけが組み立てる（アプリから文面を受け取ると共有キャッシュを汚せるため）
+function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
   const lines = racers.map(r =>
     `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
     `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
@@ -1875,13 +2006,18 @@ function buildAutoPrompt(venue, rno, racers, weather) {
     `コース:${r.course ?? '未定'} 展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
   ).join('\n');
 
+  const sel = (opts.wind || opts.tide)
+    ? `\n選択条件 — 風向:${opts.wind || '指定なし'} / 潮位:${opts.tide || '指定なし'}` : '';
+  const fix = opts.fixedFirst
+    ? `\n【1着固定】${opts.fixedFirst}号艇を1着に固定。candsは全て${opts.fixedFirst}-?-? の形式にすること。` : '';
+
   // 進入コース（スタート展示で確定）と風向は展開を最も左右する。
   // 取れているのに渡さないと、展示待ちをした意味が半分無くなる
   return `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
 【${venue} 第${rno}レース】
 天候:${weather.sky || '不明'} 風向:${weather.windDir || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm
-（コースは展示で確定した進入。「未定」は枠なり想定）
+（コースは展示で確定した進入。「未定」は枠なり想定）${sel}${fix}
 
 【出走表（boatrace.jp 実データ）】
 ${lines}
@@ -1997,11 +2133,28 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   // 展示タイム・展示STが出る前に予想を出すと、いちばん効く直前情報が抜けたまま固定される。
   // 締切まで間があるうちは投稿せず、次の実行で展示が出てから出す（Geminiも消費しない）
   if (opts.needExhibit && !hasEx) return { wait: '展示情報がまだ出ていません' };
+
+  // アプリで手入力した展示タイムは、公式にまだ出ていない枠にだけ補う。
+  // この場合の結果はその人だけのものなので、共有キャッシュは読まず書かない
+  const manual = {};
+  if (opts.exhibit && typeof opts.exhibit === 'object') {
+    for (let lane = 1; lane <= 6; lane++) {
+      const m = opts.exhibit[lane] || opts.exhibit[String(lane)];
+      if (!m || before.exhibit[lane]?.exhibitTime != null) continue;
+      const t  = Number(m.exhibitTime), st = Number(m.st);
+      const e = {};
+      if (isFinite(t)  && t  >= 5 && t  <= 10) e.exhibitTime = +t.toFixed(2);
+      if (isFinite(st) && st >= 0 && st <  2)  e.st          = +st.toFixed(2);
+      if (Object.keys(e).length) manual[lane] = e;
+    }
+  }
+  const usedManual = Object.keys(manual).length > 0;
+
   // v6: 進入コース・風向をプロンプトに加えたため、それ以前の予想は使い回さない
-  const cacheKey = `v6_${jcd}_${hd}_${rno}_0_ex${hasEx ? 1 : 0}`;
-  const cached = await lookupSharedPredict(cacheKey);
+  const cacheKey = `v6_${jcd}_${hd}_${rno}_${opts.fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
+  const cached = usedManual ? null : await lookupSharedPredict(cacheKey);
   if (cached) {
-    try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, schedule: rl.schedule, odds3t }; } catch {}
+    try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, envelope: cached, schedule: rl.schedule, odds3t }; } catch {}
   }
 
   // 共有モーター評価をマージ（みんなの評価をAIに渡す）
@@ -2014,24 +2167,25 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   const racers = rl.racers.map(r => ({
     ...r,
     odds: odds1[r.lane] ?? null,
-    exhibitTime: before.exhibit[r.lane]?.exhibitTime ?? null,
-    exhibitST: before.exhibit[r.lane]?.st ?? null,
+    exhibitTime: before.exhibit[r.lane]?.exhibitTime ?? manual[r.lane]?.exhibitTime ?? null,
+    exhibitST: before.exhibit[r.lane]?.st ?? manual[r.lane]?.st ?? null,
     course: before.exhibit[r.lane]?.course ?? null,
     motorGrade: motors[r.motorNo]?.grade || '',
     motorInfo: motors[r.motorNo] || null,
   }));
 
-  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {});
+  const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {}, opts);
   const g = await callGemini(prompt, budgetMs);
-  if (!g.ok) return { error: g.body?.error || '予想生成失敗' };
+  if (!g.ok) return { error: g.body?.error || '予想生成失敗', status: g.status, body: g.body };
   // 買い目はAIに選ばせず、AIの確率見積もりと実オッズの期待値で決める。
   // 確定後のJSONをキャッシュに入れるので、アプリ側も同じ買い目を見ることになる
   let pred;
   try { pred = applyEV(JSON.parse(g.jsonText), odds3t); }
   catch { return { error: '予想の解析に失敗' }; }
-  const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(), by: 'AI BOT' };
-  await storePredict(cacheKey, result);
-  return { pred, venue, cached: false, schedule: rl.schedule, odds3t };
+  const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(),
+    by: opts.by === undefined ? 'AI BOT' : String(opts.by).slice(0, 12) };
+  if (!usedManual) await storePredict(cacheKey, result);
+  return { pred, venue, cached: false, envelope: result, schedule: rl.schedule, odds3t };
 }
 
 // 3連単の買い目表記を正規化する（全角や矢印など表記ゆれを 1-2-3 形式に揃える）。
@@ -2756,7 +2910,7 @@ app.post('/api/slot/analyze-image', async (req, res) => {
 台番号・枠色が読み取れない場合: {"machines": []}`;
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const url = `${ORIGIN_GEMINI}/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25000);
     const response = await fetch(url, {
@@ -2802,3 +2956,11 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
+// test/run.js から内部関数を直接確かめられるようにする（テスト実行時のみ）
+if (process.env.NODE_ENV === 'test') {
+  module.exports._internals = {
+    compressTrifecta, expandTrifectaToken, normTrifecta,
+    applyEV, buildRaceTweet, buildResultTweet, buildAutoPrompt, marketImplied,
+  };
+}

@@ -2,7 +2,10 @@
   "name": "boatrace-server",
   "version": "1.0.0",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "NODE_ENV=test node test/run.js"
+  },
   "dependencies": {
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
