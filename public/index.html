@@ -81,16 +81,6 @@ input,select{font-family:var(--sans);}
 .cond-lbl{font-size:9px;color:var(--muted);letter-spacing:0.12em;font-family:var(--mono);margin-bottom:3px;}
 .cond-val{font-size:14px;font-weight:500;}
 .cond-val.live{color:var(--accent2);}
-.cond-sel{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:12px;padding:3px 5px;border-radius:4px;width:100%;margin-top:2px;-webkit-appearance:none;outline:none;}
-.adv-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:0 14px 8px;padding:12px 14px;}
-.adv-title{font-size:11px;font-family:var(--mono);font-weight:700;margin-bottom:8px;}
-.adv-item{display:flex;align-items:flex-start;gap:7px;margin-bottom:7px;}
-.adv-badge{font-size:10px;font-weight:700;font-family:var(--mono);padding:2px 7px;border-radius:3px;white-space:nowrap;flex-shrink:0;}
-.ab-g{background:rgba(0,255,204,0.12);color:var(--accent2);border:1px solid rgba(0,255,204,0.25);}
-.ab-r{background:rgba(255,64,96,0.12);color:var(--red);border:1px solid rgba(255,64,96,0.25);}
-.ab-y{background:rgba(245,193,24,0.12);color:var(--gold);border:1px solid rgba(245,193,24,0.25);}
-.ab-m{background:rgba(78,106,136,0.15);color:var(--muted);border:1px solid rgba(78,106,136,0.25);}
-.adv-text{font-size:12px;line-height:1.5;color:var(--text);}
 .dememe-scroll{display:flex;gap:8px;padding:4px 14px 8px;overflow-x:auto;scrollbar-width:none;}
 .dememe-scroll::-webkit-scrollbar{display:none;}
 .dc{flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:88px;}
@@ -352,26 +342,12 @@ input,select{font-family:var(--sans);}
         <div class="cond-val live" id="condSky">—</div>
       </div>
       <div class="cond-box">
-        <div class="cond-lbl">風向 <span id="condWindDir" style="color:var(--accent2);font-size:10px"></span></div>
-        <select class="cond-sel" id="windDir" onchange="updateAdvice();savePrefs()">
-          <option value="追い風">▶ 追い風</option>
-          <option value="向かい風" selected>◀ 向かい風</option>
-          <option value="横風">↕ 横風</option>
-          <option value="無風">○ 無風</option>
-        </select>
+        <div class="cond-lbl">風向</div>
+        <div class="cond-val live" id="condWindDir">—</div>
       </div>
       <div class="cond-box">
         <div class="cond-lbl">風速</div>
         <div class="cond-val live" id="condWind">—</div>
-      </div>
-      <div class="cond-box">
-        <div class="cond-lbl">潮位</div>
-        <select class="cond-sel" id="tideType" onchange="updateAdvice();savePrefs()">
-          <option value="満潮">満潮</option>
-          <option value="干潮" selected>干潮</option>
-          <option value="上げ潮">上げ潮</option>
-          <option value="下げ潮">下げ潮</option>
-        </select>
       </div>
       <div class="cond-box">
         <div class="cond-lbl">水温</div>
@@ -383,16 +359,6 @@ input,select{font-family:var(--sans);}
       </div>
     </div>
 
-    <div class="sec">風況アドバイス</div>
-    <div class="adv-card">
-      <div class="adv-title" id="windAdvTitle"></div>
-      <div id="windAdvBody"></div>
-    </div>
-    <div class="sec">潮位アドバイス</div>
-    <div class="adv-card">
-      <div class="adv-title" id="tideAdvTitle"></div>
-      <div id="tideAdvBody"></div>
-    </div>
     <div class="sec">出目リスト</div>
     <div class="dememe-scroll" id="dememe1"></div>
   </div>
@@ -548,7 +514,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.38';
+const APP_VERSION = 'v3.39';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -856,19 +822,6 @@ function loadExhibit(race, lane) {
   const date = document.getElementById('dateInput').value.replace(/-/g,'');
   return stor(`${MEET_KEY}_ex_${date}_r${race}_l${lane}`) || { exhibitTime:'', st:'' };
 }
-function savePrefs() {
-  stor(`${MEET_KEY}_prefs`, {
-    wind: document.getElementById('windDir').value,
-    tide: document.getElementById('tideType').value,
-  });
-}
-function loadPrefs() {
-  const p = stor(`${MEET_KEY}_prefs`);
-  if (!p) return;
-  if (p.wind) document.getElementById('windDir').value = p.wind;
-  if (p.tide) document.getElementById('tideType').value = p.tide;
-}
-
 /* ======================== HISTORY ======================== */
 const HIST_KEY = 'br_pred_history';
 function getHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch { return []; } }
@@ -1343,8 +1296,7 @@ async function fetchAllData() {
     buildEntryList(data.racers);
     buildStatsList(data.racers);
     buildMiniRacers(data.racers);
-    updateAdvice();
-    document.getElementById('aiBox').style.display    = 'none';
+      document.getElementById('aiBox').style.display    = 'none';
     document.getElementById('predCards').style.display = 'none';
     buildOddsPanel();
     showToast('✅ データ取得完了');
@@ -1527,76 +1479,15 @@ function updateWeather(w) {
   set('condWind',  w.wind  != null && w.wind  ? `${w.wind}m/s`  : '—');
   set('condWater', w.water != null && w.water ? `${w.water}℃`   : '—');
   set('condWave',  w.wave  != null && w.wave  ? `${w.wave}cm`   : '—');
-  if (w.windDir) {
-    const arr = windArrow(w.windDir);
-    const el = document.getElementById('condWindDir');
-    if (el) el.innerHTML = arr ? `${w.windDir} <span style="font-size:15px;vertical-align:middle">${arr}</span>` : w.windDir;
-    const dirSelect = document.getElementById('windDir');
-    const opts = ['追い風','向かい風','横風','無風'];
-    const matched = opts.find(o => w.windDir.includes(o));
-    if (matched && dirSelect) { dirSelect.value = matched; updateAdvice(); }
+  const wdEl = document.getElementById('condWindDir');
+  if (wdEl) {
+    const arr = w.windDir ? windArrow(w.windDir) : '';
+    wdEl.innerHTML = !w.windDir ? '—'
+      : arr ? `${w.windDir} <span style="font-size:15px;vertical-align:middle">${arr}</span>` : w.windDir;
   }
   updateStatsWeather();
 }
 
-/* ======================== ADVICE DATA ======================== */
-const windAdvice = {
-  '追い風':{c:'var(--accent2)',l:'💨 追い風 — イン優勢',items:[
-    {cls:'ab-g',b:'イン有利',t:'スタートから流れに乗れる1〜2号艇が有利。1号艇逃げ率が上昇する。'},
-    {cls:'ab-y',b:'差し有効',t:'2・3号艇の差しが決まりやすい展開に。内側からのまくり差しに注目。'},
-    {cls:'ab-r',b:'アウト注意',t:'4〜6号艇はターン時に膨らみやすく捲り難易度が上がる。'},
-  ]},
-  '向かい風':{c:'var(--orange)',l:'💨 向かい風 — アウト有利',items:[
-    {cls:'ab-r',b:'まくり増加',t:'インがスタートで遅れやすく、3〜4号艇の捲りが決まる展開に警戒。'},
-    {cls:'ab-y',b:'差し・まくり差し',t:'2号艇差し・3号艇まくり差しが有効。イン逃げ率が低下する。'},
-    {cls:'ab-g',b:'風速依存',t:'6m/s以上では3コース勝率が大幅上昇。荒れ展開の穴狙いチャンス。'},
-  ]},
-  '横風':{c:'var(--purple)',l:'💨 横風 — 荒れ展開',items:[
-    {cls:'ab-r',b:'波乱注意',t:'艇の挙動が不安定になりやすく波乱が起きやすい。穴狙いに好機。'},
-    {cls:'ab-y',b:'モーター重要',t:'エンジン出力の高い艇（評価S・A）ほど影響を受けにくい。'},
-    {cls:'ab-g',b:'内側相対有利',t:'横風でも比較的イン寄りが安定するが風向で大きく変動する。'},
-  ]},
-  '無風':{c:'var(--accent)',l:'💨 無風 — 技量勝負',items:[
-    {cls:'ab-g',b:'イン鉄板',t:'水面穏やかでイン逃げ率が最高になる条件。1号艇信頼度が大幅上昇。'},
-    {cls:'ab-y',b:'勝率重視',t:'純粋な技量差が出やすい。全国・当地勝率を最優先に予想。'},
-    {cls:'ab-m',b:'荒れ少ない',t:'上位人気での決着が多い傾向。堅い買い方が有効。'},
-  ]},
-};
-const tideAdvice = {
-  '満潮':{c:'var(--red)',l:'🌊 満潮 — 水面荒れやすい',items:[
-    {cls:'ab-r',b:'水面不安定',t:'水位が高く波が立ちやすい。ターン難易度上昇、差しが決まりやすくなる。'},
-    {cls:'ab-y',b:'まくり有効',t:'3〜4号艇の大まくりが決まる可能性が増加。波乱に注意。'},
-    {cls:'ab-g',b:'A1級有利',t:'A1級選手のアドバンテージが大きくなる荒れた水面。'},
-  ]},
-  '干潮':{c:'var(--accent2)',l:'🌊 干潮 — 水面安定',items:[
-    {cls:'ab-g',b:'水面穏やか',t:'水位が低く安定。イン逃げが決まりやすい堅い展開になりやすい。'},
-    {cls:'ab-y',b:'差し有効',t:'2号艇の差しが鉄板に近くなる。外からの捲りはやや不利。'},
-    {cls:'ab-m',b:'荒れ少ない',t:'上位人気での決着が多い。堅く買いたい場面。'},
-  ]},
-  '上げ潮':{c:'var(--accent)',l:'🌊 上げ潮 — 内→外へ流れ',items:[
-    {cls:'ab-r',b:'イン不利',t:'潮が内→外へ流れ、インが膨らみやすく捲られやすくなる。'},
-    {cls:'ab-g',b:'アウト有利',t:'4〜5号艇の捲りが入りやすい展開。穴狙いの好機。'},
-    {cls:'ab-y',b:'差しが鍵',t:'潮流を利用した2号艇差しも有効。流れを読む選手が重要。'},
-  ]},
-  '下げ潮':{c:'var(--purple)',l:'🌊 下げ潮 — 外→内へ流れ',items:[
-    {cls:'ab-g',b:'イン安定',t:'潮が外→内に流れ、インが粘れる展開。逃げ率が上昇する。'},
-    {cls:'ab-r',b:'捲り不発',t:'アウト大捲りが潮に逆らう形になりにくく成功率がやや低下。'},
-    {cls:'ab-y',b:'堅め展開',t:'荒れにくく上位人気を信頼しやすい。イン中心の展開が多い。'},
-  ]},
-};
-
-function updateAdvice() {
-  const w = document.getElementById('windDir').value;
-  const t = document.getElementById('tideType').value;
-  renderAdv('windAdvTitle','windAdvBody', windAdvice[w]);
-  renderAdv('tideAdvTitle','tideAdvBody', tideAdvice[t]);
-}
-function renderAdv(tid, bid, d) {
-  document.getElementById(tid).innerHTML = `<span style="color:${d.c}">${d.l}</span>`;
-  document.getElementById(bid).innerHTML = d.items.map(i =>
-    `<div class="adv-item"><span class="adv-badge ${i.cls}">${i.b}</span><span class="adv-text">${i.t}</span></div>`
-  ).join('');
-}
 
 /* ======================== DEMEME ======================== */
 const dememeList = [
@@ -1894,8 +1785,6 @@ async function runPredict(auto = false) {
   aiText.textContent = auto ? '🌐 共有予想を読み込み中...' : 'Gemini AI がレースデータを解析中...';
   aiText.className = 'ai-text loading';
   const racers = raceData?.racers || [];
-  const wind   = document.getElementById('windDir').value;
-  const tide   = document.getElementById('tideType').value;
 
   // 手入力した展示タイム/STだけをサーバーへ渡す（公式に出ていない枠の補完用）。
   // 出走表・オッズ・プロンプト本文はサーバーが boatrace.jp から取り直して組み立てる
@@ -1913,7 +1802,7 @@ async function runPredict(auto = false) {
   try {
     const [predictResp, odds3tResp, odds2tResp, odds3fResp] = await Promise.allSettled([
       auto ? Promise.resolve({ ok: true, data: sharedData }) : fetchPredictWithRetry(
-        { jcd: VENUE_JCD, hd: dateStr, rno: currentRace, fixedFirst: fixedFirst || 0, wind, tide, by: getNickname(), exhibit },
+        { jcd: VENUE_JCD, hd: dateStr, rno: currentRace, fixedFirst: fixedFirst || 0, by: getNickname(), exhibit },
         s => {
           aiText.textContent = `⏳ AI予想が混み合っています（無料枠の上限）。残り${s}秒で自動再試行します…`;
         }),
@@ -2206,10 +2095,8 @@ function tick() {
   document.getElementById('dateInput').value =
     `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
-  loadPrefs();
   buildDememe('dememe1');
   buildDememe('dememe2');
-  updateAdvice();
   buildEntryList([]);
   buildStatsList([]);
   updateFixedBar();

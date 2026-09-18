@@ -1720,16 +1720,14 @@ app.post('/api/predict', async (req, res) => {
   if (!VENUES[jcd])            return res.status(400).json({ error: '会場コードが不正です' });
   if (!/^\d{8}$/.test(hd))     return res.status(400).json({ error: '日付が不正です' });
   if (!(rno >= 1 && rno <= 12)) return res.status(400).json({ error: 'レース番号が不正です' });
-  // 選択肢はアプリのセレクトボックス由来。改行や長文でプロンプトを乗っ取られないよう切り詰める
-  const oneLine = v => String(v ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 20);
+  // ニックネームは表示に使うだけ。改行や長文が混ざらないよう切り詰める
+  const oneLine = v => String(v ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 12);
   const ff = parseInt(b.fixedFirst, 10);
 
   try {
     const got = await getOrCreatePrediction(jcd, hd, rno, 26000, {
       fixedFirst: (ff >= 1 && ff <= 6) ? ff : 0,
-      wind: oneLine(b.wind),
-      tide: oneLine(b.tide),
-      by:   oneLine(b.by).slice(0, 12),
+      by: oneLine(b.by),
       exhibit: b.exhibit,
     });
     if (got.error) return res.status(got.status || 500).json(got.body || { error: got.error });
@@ -1996,7 +1994,7 @@ function motorLine(r) {
   return parts.join(' ');
 }
 
-// opts: { fixedFirst, wind, tide } — アプリから1着固定や風向・潮位の指定があれば足す。
+// opts: { fixedFirst } — アプリから1着固定の指定があれば足す。
 // プロンプト本体はサーバーだけが組み立てる（アプリから文面を受け取ると共有キャッシュを汚せるため）
 function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
   const lines = racers.map(r =>
@@ -2006,8 +2004,6 @@ function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
     `コース:${r.course ?? '未定'} 展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
   ).join('\n');
 
-  const sel = (opts.wind || opts.tide)
-    ? `\n選択条件 — 風向:${opts.wind || '指定なし'} / 潮位:${opts.tide || '指定なし'}` : '';
   const fix = opts.fixedFirst
     ? `\n【1着固定】${opts.fixedFirst}号艇を1着に固定。candsは全て${opts.fixedFirst}-?-? の形式にすること。` : '';
 
@@ -2017,7 +2013,7 @@ function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
 
 【${venue} 第${rno}レース】
 天候:${weather.sky || '不明'} 風向:${weather.windDir || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm
-（コースは展示で確定した進入。「未定」は枠なり想定）${sel}${fix}
+（コースは展示で確定した進入。「未定」は枠なり想定）${fix}
 
 【出走表（boatrace.jp 実データ）】
 ${lines}

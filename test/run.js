@@ -141,11 +141,14 @@ async function main() {
 
     await seedDay(AI_EDGE, [12]);
     const before3 = (await stat()).geminiCalls;
-    const p1 = await postJ('/api/predict', { jcd: '04', hd, rno: 12, wind: '追い風', tide: '満潮', by: 'テスト' });
+    const p1 = await postJ('/api/predict', { jcd: '04', hd, rno: 12, by: 'テスト' });
     check('正しい入力なら予想が返る', p1.status === 200 && !!p1.body.content, JSON.stringify(p1.body).slice(0, 200));
     const st3 = await stat();
-    check('プロンプトはサーバーが組み立てている', st3.lastPrompt.includes('出走表（boatrace.jp 実データ）') && st3.lastPrompt.includes('選択条件 — 風向:追い風'),
+    check('プロンプトはサーバーが組み立てている', st3.lastPrompt.includes('出走表（boatrace.jp 実データ）'),
       st3.lastPrompt.slice(0, 120));
+    // 風向は boatrace.jp の実測をそのまま渡す。アプリ側の手動指定はもう無い
+    check('風向は公式の実測が入る', st3.lastPrompt.includes('風向:北東'), st3.lastPrompt.slice(0, 200));
+    check('手動の選択条件は渡さない', !st3.lastPrompt.includes('選択条件'));
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
     check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v6_04_${hd}_12_0_ex1`])));
     const p2 = await postJ('/api/predict', { jcd: '04', hd, rno: 12 });
