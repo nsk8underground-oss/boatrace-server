@@ -58,6 +58,7 @@ function createStub() {
     results: {},                 // rno -> { combo, pay }
     hasExhibit: false,
     failTweets: false,
+    tideStations: ['TK'],       // 気象庁にこの地点だけがある状態にする
     geminiCalls: 0,
     lastPrompt: '',
     tweets: [],
@@ -111,6 +112,43 @@ function createStub() {
     return `<html><body><table><tbody>${rows}</tbody></table></body></html>`;
   }
 
+  // 気象庁の潮位表と同じ固定長テキストを1年ぶん作る。
+  // 潮位は半日周期（約12時間25分）の正弦波で、地点記号と日付は本物と同じ桁に置く
+  function tideYearTxt(year, code) {
+    const p = (v, w) => String(v).padStart(w, '0');
+    const lines = [];
+    const d = new Date(Date.UTC(year, 0, 1));
+    for (let day = 0; day < 366 && d.getUTCFullYear() === year; day++) {
+      const phase = (day * 0.8) % (2 * Math.PI);   // 日ごとに満潮の時刻がずれる
+      const level = m => Math.round(120 + 80 * Math.sin((m / 745) * 2 * Math.PI + phase));
+      let s = '';
+      for (let h = 0; h < 24; h++) s += String(level(h * 60)).padStart(3, ' ');
+      s += p(year % 100, 2) + p(d.getUTCMonth() + 1, 2) + p(d.getUTCDate(), 2) + code;
+      // 満潮・干潮は正弦波の式から直接求める（1分刻みで山を探すと丸め誤差で偽の山を拾う）。
+      //   sin((m/745)*2π + phase) が最大 = 引数 π/2 + 2πk、最小 = 3π/2 + 2πk
+      const at = target => {
+        const out = [];
+        for (let k = -1; k <= 3; k++) {
+          const m = Math.round(745 * (target + 2 * Math.PI * k - phase) / (2 * Math.PI));
+          if (m >= 0 && m <= 1439) out.push({ m, v: level(m) });
+        }
+        return out.sort((a, b) => a.m - b.m).slice(0, 4);
+      };
+      const highs = at(Math.PI / 2), lows = at(3 * Math.PI / 2);
+      const slot = arr => {
+        let out = '';
+        for (let i = 0; i < 4; i++) {
+          out += arr[i] ? p(Math.floor(arr[i].m / 60), 2) + p(arr[i].m % 60, 2) + String(arr[i].v).padStart(3, ' ')
+                        : '9999999';
+        }
+        return out;
+      };
+      lines.push(s + slot(highs) + slot(lows));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return lines.join('\n') + '\n';
+  }
+
   function resultHtml(combo, pay) {
     const rows = combo.split('-').map((l, i) => `<tr><td>${i + 1}</td><td>${l}</td><td>スタブ 太郎</td></tr>`).join('');
     return `<html><body><table>${rows}</table>
@@ -135,12 +173,20 @@ function createStub() {
         if (d.results)    state.results = d.results;
         if (d.hasExhibit  !== undefined) state.hasExhibit = !!d.hasExhibit;
         if (d.failTweets  !== undefined) state.failTweets = !!d.failTweets;
+        if (d.tideStations) state.tideStations = d.tideStations;
         if (d.resetCalls) { state.geminiCalls = 0; state.tweets.length = 0; }
         res.writeHead(200).end('ok');
       });
     }
     if (u.pathname === '/__stat') {
       return json({ geminiCalls: state.geminiCalls, lastPrompt: state.lastPrompt, tweets: state.tweets.slice() });
+    }
+    // 気象庁の潮位表（/kaiyou/data/db/tide/suisan/txt/<年>/<地点>.txt）
+    const tm = u.pathname.match(/\/tide\/suisan\/txt\/(\d{4})\/([A-Z0-9]{2})\.txt$/);
+    if (tm) {
+      if (!state.tideStations.includes(tm[2])) { res.writeHead(404).end('nf'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      return res.end(tideYearTxt(parseInt(tm[1], 10), tm[2]));
     }
     if (u.pathname.endsWith('/racelist'))   return html(racelistHtml());
     if (u.pathname.endsWith('/beforeinfo')) return html(beforeinfoHtml());
