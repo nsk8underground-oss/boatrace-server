@@ -2748,8 +2748,14 @@ app.all('/api/auto-post', async (req, res) => {
         const mm = legacy ? (p.matoi || []).slice(0, 4) : (p.matoi || []);
         const aa = legacy ? (p.ana   || []).slice(0, 2) : (p.ana   || []);
         const bet = mm.length + aa.length > 0;
-        // 見送りのレースも結果は取る。買わなかった判断が正しかったかを校正に残すため
-        const html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${day}&rno=${p.rno}`, 10000);
+        // 見送りのレースも結果は取る。買わなかった判断が正しかったかを校正に残すため。
+        // 取得は1回きりにしない。開催ピーク時の boatrace.jp は10秒で返らないことがあり、
+        // そこで落ちると結果が出ているレースまで「結果待ち」になる。
+        // 一度その日を投稿すると xresult で打ち切られ、その結果は二度と集計されない
+        let html = null;
+        for (let attempt = 0; attempt < 2 && !html; attempt++) {
+          html = await fetchQuick(`${BASE}/raceresult?jcd=${p.jcd}&hd=${day}&rno=${p.rno}`, attempt ? 15000 : 10000);
+        }
         const r = html ? parseRaceResult(html) : null;
         const final = !!(r && r.order && r.order.length >= 3);
         const tri = final ? r.order.slice(0, 3).map(o => o.lane).join('-') : null;
@@ -2783,7 +2789,9 @@ app.all('/api/auto-post', async (req, res) => {
       }
       if (!rows.length) {
         const why = noBet.length && !pending.length ? '全レース見送りのため集計対象なし' : '確定した結果なし';
-        return res.json({ ok: true, skipped: why, day, counts });
+        // pending を必ず返す。ここを黙って返さないと「結果は出ているのに結果待ちになる」
+        // と言われたときに、取得に失敗したのか結果ページがまだ未確定なのかが分からない
+        return res.json({ ok: true, skipped: why, day, counts, pending });
       }
       const text = buildResultTweet(day, rows, { noBet: noBet.length, pending: pending.length, today: day === hd });
       if (dryRun) return res.json({ ok: true, dryRun: true, day, text, xLen: xLen(text), counts, rows, noBet, pending });
@@ -2793,7 +2801,7 @@ app.all('/api/auto-post', async (req, res) => {
       const posted = await postToX(text);
       // 前日ぶんを投稿した場合もその日の記録として残す（二重投稿を防ぐ）
       if (posted.ok) await redisCmd('SET', `xresult:${day}`, '1', 'EX', '172800');
-      return res.json({ ok: posted.ok, day, text, posted, counts, calib });
+      return res.json({ ok: posted.ok, day, text, posted, counts, calib, pending });
     }
 
     // mode=races: 締切15〜90分前のレースを1件だけ投稿（Vercelの30秒制限に収めるため）
