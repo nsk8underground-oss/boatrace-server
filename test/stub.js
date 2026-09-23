@@ -59,6 +59,7 @@ function createStub() {
     hasExhibit: false,
     failTweets: false,
     tideStations: ['TK'],       // 気象庁にこの地点だけがある状態にする
+    resultFailFirst: 0,         // 結果ページの最初のN回だけ失敗させる（取り直しの確認用）
     geminiCalls: 0,
     lastPrompt: '',
     tweets: [],
@@ -174,6 +175,7 @@ function createStub() {
         if (d.hasExhibit  !== undefined) state.hasExhibit = !!d.hasExhibit;
         if (d.failTweets  !== undefined) state.failTweets = !!d.failTweets;
         if (d.tideStations) state.tideStations = d.tideStations;
+        if (d.resultFailFirst !== undefined) state.resultFailFirst = d.resultFailFirst | 0;
         if (d.resetCalls) { state.geminiCalls = 0; state.tweets.length = 0; }
         res.writeHead(200).end('ok');
       });
@@ -193,6 +195,8 @@ function createStub() {
     if (u.pathname.endsWith('/odds3t'))     return html(odds3tHtml());
     if (u.pathname.endsWith('/oddstf'))     return html('<html><body></body></html>');
     if (u.pathname.endsWith('/raceresult')) {
+      // 開催ピーク時の boatrace.jp のように、最初の何回かだけ失敗させる
+      if (state.resultFailFirst > 0) { state.resultFailFirst--; res.writeHead(503).end('busy'); return; }
       const r = state.results[u.searchParams.get('rno')];
       if (!r) { res.writeHead(404).end('no result'); return; }
       return html(resultHtml(r.combo, r.pay));

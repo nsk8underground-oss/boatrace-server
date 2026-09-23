@@ -84,7 +84,10 @@ async function main() {
   // セクションごとに別のレース番号を使って、前のセクションの予想を引きずらないようにする
   const seedDay = async (gemini, rnos, lead = 20) => {
     const del = [`xlog:${hd}`, `xlogl:${hd}`, `xcount:${hd}`, `xskip:${hd}`, `xresult:${hd}`, `calibdone:${hd}`, 'xhold'];
-    for (let r = 1; r <= 12; r++) del.push(`xposted:${hd}:04:${r}`, `calibsrc:${hd}:04:${r}`);
+    for (let r = 1; r <= 12; r++) {
+      del.push(`xposted:${hd}:04:${r}`, `calibsrc:${hd}:04:${r}`);
+      del.push(`predict:v7_04_${hd}_${r}_0_ex1`, `predict:v7_04_${hd}_${r}_0_ex0`);
+    }
     del.push(`tide:TK:${hd}`);
     await seed({
       del,
@@ -253,6 +256,28 @@ async function main() {
     await redis(['DEL', `xresult:${hd}`]);
     const res2 = await cron('mode=results');
     eq('同じ日を2度集計しても記録は増えない', res2.calib?.added ?? 0, 0);
+
+    // 結果ページの取得に失敗したレースが「結果待ち」で終わらないこと。
+    // 一度その日を投稿すると打ち切られるので、取り逃すとその結果は二度と集計されない
+    await seedDay(AI_EDGE, [5, 6], 20);
+    for (let i = 0; i < 2; i++) await cron('mode=races');
+    const log2 = ((await redis(['LRANGE', `xlogl:${hd}`, 0, -1])) || []).map(r => JSON.parse(r));
+    for (const e of log2) e.t = hhmm(nowMin - 120);
+    await redis(['DEL', `xlogl:${hd}`]);
+    for (const e of log2) await redis(['RPUSH', `xlogl:${hd}`, JSON.stringify(e)]);
+    await seed({ results: Object.fromEntries(log2.map(e => [String(e.rno), { combo: '1-2-3', pay: 1150 }])),
+                 resultFailFirst: 2 });   // 2レースとも1回目は失敗させる
+    const retried = await cron('mode=results&dryRun=1');
+    eq('1回目に失敗しても取り直して判定する', retried.counts?.judged, 2);
+
+    // 取得に失敗したままなら、その理由を必ず応答に残す（原因を追えなくなるため）
+    await seed({ resultFailFirst: 99 });
+    const stuck = await cron('mode=results&dryRun=1');
+    check('全件が結果待ちでも pending を返す', Array.isArray(stuck.pending) && stuck.pending.length === 2,
+      JSON.stringify(stuck).slice(0, 200));
+    check('結果待ちの理由が分かる', (stuck.pending || []).every(p => p.why === 'fetch'),
+      JSON.stringify(stuck.pending));
+    await seed({ resultFailFirst: 0 });
 
     /* ============================================================ */
     console.log('\n【8】結果ツイートの文面');
