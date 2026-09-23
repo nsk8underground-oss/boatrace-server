@@ -279,6 +279,19 @@ async function main() {
       JSON.stringify(stuck.pending));
     await seed({ resultFailFirst: 0 });
 
+    // 結果ページが返っていないのか、読み取りに失敗したのかを /api/debug-result で見分けられること
+    const dbgOk = await getJ(`/api/debug-result?jcd=04&hd=${hd}&rno=${log2[0].rno}`);
+    check('結果が読めるときは着順が返る', (dbgOk.body.parsed?.order || []).length >= 3, JSON.stringify(dbgOk.body).slice(0, 200));
+    check('表の数も返す', (dbgOk.body.counts?.tr || 0) > 0, JSON.stringify(dbgOk.body.counts));
+    await seed({ resultNoData: true });
+    const dbgNone = await getJ(`/api/debug-result?jcd=04&hd=${hd}&rno=${log2[0].rno}`);
+    eq('表が無いページでは tr が0', dbgNone.body.counts?.tr, 0);
+    check('そのときページの見出しと本文が分かる',
+      /ボートレース公式/.test(dbgNone.body.title || '') && /該当するデータ/.test(dbgNone.body.bodyText || ''),
+      JSON.stringify({ title: dbgNone.body.title, bodyText: dbgNone.body.bodyText }));
+    check('どのURLを見たのかも返す', String(dbgNone.body.url || '').includes('/raceresult?jcd=04'), dbgNone.body.url);
+    await seed({ resultNoData: false });
+
     /* ============================================================ */
     console.log('\n【8】結果ツイートの文面');
     const tw = buildResultTweet(hd, [

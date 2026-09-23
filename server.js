@@ -1487,13 +1487,14 @@ app.get('/api/debug-before', async (req, res) => {
 });
 
 app.get('/api/debug-result', async (req, res) => {
-  const { jcd = '04', hd, rno = '1' } = req.query;
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const date = hd || today;
+  const { jcd = '04', rno = '1' } = req.query;
+  // 当日は日本時間で決める。UTCで決めると朝9時までは前日を見てしまう
+  const date = String(req.query.hd || todayHd());
+  const url = `${BASE}/raceresult?jcd=${jcd}&hd=${date}&rno=${rno}`;
   try {
-    const html = await fetchHtml(`${BASE}/raceresult?jcd=${jcd}&hd=${date}&rno=${rno}`);
-    if (!html) return res.json({ error: 'HTML取得失敗' });
-    const $ = cheerio.load(html);
+    const r = await fetchOnce(url, 20000);
+    if (!r.html) return res.json({ url, jcd, hd: date, rno, status: r.status, error: 'HTML取得失敗', detail: r.error });
+    const $ = cheerio.load(r.html);
     const rows = [];
     $('tr').each((_, tr) => {
       const cells = $(tr).find('td');
@@ -1504,7 +1505,18 @@ app.get('/api/debug-result', async (req, res) => {
         cells: cells.map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 25)).get().slice(0, 6),
       });
     });
-    res.json({ rows: rows.slice(0, 40), parsed: parseRaceResult(html), htmlLen: html.length });
+    // 表が1行も無いときは、そもそも結果ページが返っていない可能性が高い
+    //（開催していない日・レース、メンテナンス、案内ページなど）。
+    // 見出しと本文を返して、ページ構造の変更と取り違えないようにする
+    const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+    res.json({
+      url, jcd, hd: date, rno, status: r.status, htmlLen: r.html.length,
+      title: $('title').text().replace(/\s+/g, ' ').trim(),
+      counts: { table: $('table').length, tr: $('tr').length, td: $('td').length },
+      bodyText: bodyText.slice(0, 800),
+      rows: rows.slice(0, 40),
+      parsed: parseRaceResult(r.html),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

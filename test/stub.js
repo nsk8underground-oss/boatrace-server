@@ -60,6 +60,7 @@ function createStub() {
     failTweets: false,
     tideStations: ['TK'],       // 気象庁にこの地点だけがある状態にする
     resultFailFirst: 0,         // 結果ページの最初のN回だけ失敗させる（取り直しの確認用）
+    resultNoData: false,        // 結果ページの代わりに「データがありません」を返す
     geminiCalls: 0,
     lastPrompt: '',
     tweets: [],
@@ -176,6 +177,7 @@ function createStub() {
         if (d.failTweets  !== undefined) state.failTweets = !!d.failTweets;
         if (d.tideStations) state.tideStations = d.tideStations;
         if (d.resultFailFirst !== undefined) state.resultFailFirst = d.resultFailFirst | 0;
+        if (d.resultNoData !== undefined) state.resultNoData = !!d.resultNoData;
         if (d.resetCalls) { state.geminiCalls = 0; state.tweets.length = 0; }
         res.writeHead(200).end('ok');
       });
@@ -197,6 +199,9 @@ function createStub() {
     if (u.pathname.endsWith('/raceresult')) {
       // 開催ピーク時の boatrace.jp のように、最初の何回かだけ失敗させる
       if (state.resultFailFirst > 0) { state.resultFailFirst--; res.writeHead(503).end('busy'); return; }
+      // 開催していない日・レースで公式が返す案内ページ（表が1つも無い）
+      if (state.resultNoData) return html('<html><head><title>ボートレース公式</title></head>'
+        + '<body><div>該当するデータがありませんでした。</div></body></html>');
       const r = state.results[u.searchParams.get('rno')];
       if (!r) { res.writeHead(404).end('no result'); return; }
       return html(resultHtml(r.combo, r.pay));
