@@ -1487,13 +1487,14 @@ app.get('/api/debug-before', async (req, res) => {
 });
 
 app.get('/api/debug-result', async (req, res) => {
-  const { jcd = '04', hd, rno = '1' } = req.query;
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const date = hd || today;
+  const { jcd = '04', rno = '1' } = req.query;
+  // 当日は日本時間で決める。UTCで決めると朝9時までは前日を見てしまう
+  const date = String(req.query.hd || todayHd());
+  const url = `${BASE}/raceresult?jcd=${jcd}&hd=${date}&rno=${rno}`;
   try {
-    const html = await fetchHtml(`${BASE}/raceresult?jcd=${jcd}&hd=${date}&rno=${rno}`);
-    if (!html) return res.json({ error: 'HTML取得失敗' });
-    const $ = cheerio.load(html);
+    const r = await fetchOnce(url, 20000);
+    if (!r.html) return res.json({ url, jcd, hd: date, rno, status: r.status, error: 'HTML取得失敗', detail: r.error });
+    const $ = cheerio.load(r.html);
     const rows = [];
     $('tr').each((_, tr) => {
       const cells = $(tr).find('td');
@@ -1504,7 +1505,18 @@ app.get('/api/debug-result', async (req, res) => {
         cells: cells.map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 25)).get().slice(0, 6),
       });
     });
-    res.json({ rows: rows.slice(0, 40), parsed: parseRaceResult(html), htmlLen: html.length });
+    // 表が1行も無いときは、そもそも結果ページが返っていない可能性が高い
+    //（開催していない日・レース、メンテナンス、案内ページなど）。
+    // 見出しと本文を返して、ページ構造の変更と取り違えないようにする
+    const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+    res.json({
+      url, jcd, hd: date, rno, status: r.status, htmlLen: r.html.length,
+      title: $('title').text().replace(/\s+/g, ' ').trim(),
+      counts: { table: $('table').length, tr: $('tr').length, td: $('td').length },
+      bodyText: bodyText.slice(0, 800),
+      rows: rows.slice(0, 40),
+      parsed: parseRaceResult(r.html),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1681,9 +1693,14 @@ function tideLine(d, closeMin) {
     .sort((x, y) => x.min - y.min);
   const near = all.find(p => Math.abs(p.min - closeMin) <= 30);
   const next = all.find(p => p.min > closeMin);
+  // 次の転流が日付をまたぐ夜のレースでは next が無い。
+  // そのときは直前の転流から向きを決める（満潮を過ぎていれば下げ潮）。
+  // ここを空にすると、BOTが投稿する夕方以降でいちばん向きを言えなくなる
+  const prev = [...all].reverse().find(p => p.min <= closeMin);
   // 次に来るのが満潮なら上げ潮、干潮なら下げ潮。転流の前後30分は「前後」とだけ言う
   const state = near ? `${near.k}前後`
     : next ? `${next.k === '満潮' ? '上げ潮' : '下げ潮'}・${next.k}${tideHhmm(next.min)}まで${next.min - closeMin}分`
+    : prev ? (prev.k === '満潮' ? '下げ潮' : '上げ潮')
     : '';
   return `締切時点${level}cm${state ? `（${state}）` : ''}${day ? ` 本日 ${day}` : ''}`;
 }
@@ -2672,12 +2689,23 @@ app.get('/api/calibration', async (req, res) => {
 //   dryRun=1     : 投稿せず本文だけ返す（X未設定でも動作確認できる）
 app.all('/api/auto-post', async (req, res) => {
   const secret = req.get('x-cron-secret') || req.query.secret || '';
-  if (!CRON_SECRET || secret !== CRON_SECRET) return res.status(401).json({ error: 'invalid cron secret' });
+  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+  // 投稿するときは CRON_SECRET が要る。サイトのパスワードは人に教えるものなので、
+  // ログインできるだけで X に投稿できてはいけない。
+  // 一方 dryRun は本文を組み立てて返すだけなので、ログイン済みならブラウザから見られるようにする
+  //（不調の原因を調べるのに毎回 secret 付きのURLを作るのは現実的でない）
+  const byCron = !!CRON_SECRET && secret === CRON_SECRET;
+  if (!byCron && !(dryRun && req.auth)) {
+    return res.status(401).json({
+      error: 'invalid cron secret',
+      hint: dryRun ? 'dryRun はサイトにログインした状態なら secret 無しで見られます'
+                   : '投稿を伴う実行には x-cron-secret か ?secret= が必要です',
+    });
+  }
 
   // Vercel の30秒制限内で必ず応答を返すための全体締切
   const tEnd = Date.now() + 55000;
   const timing = { redis: REDIS_ENABLED };
-  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
   const mode = req.query.mode === 'results' ? 'results'
              : req.query.mode === 'motors'  ? 'motors'
              : 'races';

@@ -155,7 +155,7 @@ async function main() {
     check('風向は公式の実測が入る', st3.lastPrompt.includes('風向:北東'), st3.lastPrompt.slice(0, 200));
     check('手動の選択条件は渡さない', !st3.lastPrompt.includes('選択条件'));
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
-    check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm（(上げ潮|下げ潮|満潮前後|干潮前後)/.test(st3.lastPrompt),
+    check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm/.test(st3.lastPrompt),
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
     check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v7_04_${hd}_12_0_ex1`])));
     const p2 = await postJ('/api/predict', { jcd: '04', hd, rno: 12 });
@@ -195,6 +195,10 @@ async function main() {
     check('満潮・干潮の時刻も載る', line1230.includes('満潮08:20(186cm)') && line1230.includes('干潮18:30(86cm)'), line1230);
     // 満潮の前後30分は向きを断定せず「満潮前後」とする
     check('転流の前後は前後とだけ言う', tideLine(td, 8 * 60 + 35).includes('満潮前後'), tideLine(td, 8 * 60 + 35));
+    // この日の最後の転流を過ぎた夜のレース。次の転流は翌日なので、直前の転流から向きを決める
+    const lateNight = tideLine(td, 22 * 60);
+    check('最後の転流を過ぎても向きが分かる', lateNight.includes('上げ潮'), lateNight);
+    check('満潮を過ぎた直後は下げ潮', tideLine(td, 9 * 60).includes('下げ潮'), tideLine(td, 9 * 60));
     check('潮位が取れない場でも落ちない', tideLine(null, 600) === '');
     const tideApi = await getJ(`/api/tide?jcd=04&hd=${hd}`);
     check('/api/tide が東京の潮位を返す', tideApi.status === 200 && tideApi.body.station === 'TK' && tideApi.body.highs.length > 0,
@@ -278,6 +282,29 @@ async function main() {
     check('結果待ちの理由が分かる', (stuck.pending || []).every(p => p.why === 'fetch'),
       JSON.stringify(stuck.pending));
     await seed({ resultFailFirst: 0 });
+
+    // 結果ページが返っていないのか、読み取りに失敗したのかを /api/debug-result で見分けられること
+    const dbgOk = await getJ(`/api/debug-result?jcd=04&hd=${hd}&rno=${log2[0].rno}`);
+    check('結果が読めるときは着順が返る', (dbgOk.body.parsed?.order || []).length >= 3, JSON.stringify(dbgOk.body).slice(0, 200));
+    check('表の数も返す', (dbgOk.body.counts?.tr || 0) > 0, JSON.stringify(dbgOk.body.counts));
+    await seed({ resultNoData: true });
+    const dbgNone = await getJ(`/api/debug-result?jcd=04&hd=${hd}&rno=${log2[0].rno}`);
+    eq('表が無いページでは tr が0', dbgNone.body.counts?.tr, 0);
+    check('そのときページの見出しと本文が分かる',
+      /ボートレース公式/.test(dbgNone.body.title || '') && /該当するデータ/.test(dbgNone.body.bodyText || ''),
+      JSON.stringify({ title: dbgNone.body.title, bodyText: dbgNone.body.bodyText }));
+    check('どのURLを見たのかも返す', String(dbgNone.body.url || '').includes('/raceresult?jcd=04'), dbgNone.body.url);
+    await seed({ resultNoData: false });
+
+    // 不調を調べるときに毎回 secret 付きURLを作らずに済むこと。
+    // ただしログインできるだけで X に投稿できてはいけない
+    const dryAsUser = await getJ('/api/auto-post?mode=results&dryRun=1');
+    check('ログイン済みなら dryRun は secret 無しで見られる', dryAsUser.status === 200,
+      `status=${dryAsUser.status} ${JSON.stringify(dryAsUser.body).slice(0, 120)}`);
+    const postAsUser = await getJ('/api/auto-post?mode=results');
+    eq('secret 無しの本番実行は401', postAsUser.status, 401);
+    const noAuth = await fetch(`${base}/api/auto-post?mode=results&dryRun=1`);
+    check('ログインもしていなければ dryRun も見られない', noAuth.status === 401, `status=${noAuth.status}`);
 
     /* ============================================================ */
     console.log('\n【8】結果ツイートの文面');
