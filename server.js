@@ -2287,11 +2287,17 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   // 4種を並列取得（所要時間は最も遅い1本ぶん）。
   // 開催ピーク時の boatrace.jp は10秒では返らないことがあるため、
   // 予想に必須の出走表・直前情報は長めに、無くても成立するオッズは短めにする
+  // 3連単オッズは買い目を決める材料そのもの。ここが空だと期待値を出せず、
+  // 「確率の高い順に6点」を買うだけの動作に落ちる（それが回収率を大きく下げていた）。
+  // アプリ側の /api/odds3t と同じく、取れるまで数回試す
+  const fetchOdds3t = async () => {
+    try { return await fetchHtml(`${BASE}/odds3t?${q}`, 2); } catch { return null; }
+  };
   const [rlH, beforeH, o1H, o3H, tideDay] = await Promise.all([
     fetchQuick(`${BASE}/racelist?${q}`, 18000),
     fetchQuick(`${BASE}/beforeinfo?${q}`, 18000),
     fetchQuick(`${BASE}/oddstf?${q}`, 8000),
-    fetchQuick(`${BASE}/odds3t?${q}`, 8000),
+    fetchOdds3t(),
     fetchTideDay(jcd, hd),
   ]);
   const rl = rlH ? parseRacelist(rlH, jcd, hd, rno) : null;
@@ -2304,6 +2310,12 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   // 展示タイム・展示STが出る前に予想を出すと、いちばん効く直前情報が抜けたまま固定される。
   // 締切まで間があるうちは投稿せず、次の実行で展示が出てから出す（Geminiも消費しない）
   if (opts.needExhibit && !hasEx) return { wait: '展示情報がまだ出ていません' };
+
+  // 3連単オッズが取れないと期待値を計算できず、applyEV は「確率の高い順に6点」を
+  // 並べるだけの動作（ev_mode='noodds'）に落ちる。それは市場の控除率25%をそのまま
+  // 被る買い方で、見送りも一度も発生しない。投稿せず次の実行で取り直す
+  const hasOdds = Object.keys(odds3t).length > 0;
+  if (opts.needEV && !hasOdds) return { wait: '3連単オッズを取得できませんでした' };
 
   // アプリで手入力した展示タイムは、公式にまだ出ていない枠にだけ補う。
   // この場合の結果はその人だけのものなので、共有キャッシュは読まず書かない
@@ -2325,7 +2337,14 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   const cacheKey = `v7_${jcd}_${hd}_${rno}_${opts.fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
   const cached = usedManual ? null : await lookupSharedPredict(cacheKey);
   if (cached) {
-    try { return { pred: JSON.parse(cached.content[0].text), venue, cached: true, envelope: cached, schedule: rl.schedule, odds3t }; } catch {}
+    try {
+      const p = JSON.parse(cached.content[0].text);
+      // オッズが無いまま作られた予想は買い目の根拠が無い。
+      // いまオッズが取れているなら、それは使わず作り直す
+      if (!(opts.needEV && p.ev_mode === 'noodds')) {
+        return { pred: p, venue, cached: true, envelope: cached, schedule: rl.schedule, odds3t };
+      }
+    } catch {}
   }
 
   // 共有モーター評価をマージ（みんなの評価をAIに渡す）
@@ -2360,6 +2379,11 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(),
     by: opts.by === undefined ? 'AI BOT' : String(opts.by).slice(0, 12) };
   if (!usedManual) await storePredict(cacheKey, result);
+  // 期待値を出せなかった予想は、アプリには残すが投稿はしない。
+  // 根拠のない6点を毎レース買い続けるのが回収率を下げていた原因のため
+  if (opts.needEV && pred.ev_mode !== 'ev') {
+    return { wait: `期待値を計算できませんでした（${pred.ev_mode}）` };
+  }
   return { pred, venue, cached: false, envelope: result, schedule: rl.schedule, odds3t };
 }
 
@@ -2653,10 +2677,17 @@ app.get('/api/calibration', async (req, res) => {
       }
     }
 
+    // どの方式で買い目を決めたかの内訳。ここが ev 以外ばかりなら、
+    // 期待値ではなく「確率の高い順」で買っている＝控除率をそのまま被っている
+    const modes = {};
+    for (const r of races) modes[r.mode || 'unknown'] = (modes[r.mode || 'unknown'] || 0) + 1;
+
     res.json({
       races: races.length,
       bet: bet.length,
       skipped: races.length - bet.length,
+      modes,
+      withOdds: races.filter(r => r.mktP != null).length,
       hit: hits,
       points,
       invested: points * 100,
@@ -2943,7 +2974,7 @@ app.all('/api/auto-post', async (req, res) => {
     // 締切まで間があるレースは展示が出てから投稿する。
     // 締切が近い場合は、展示が取れなくても（取得失敗のこともある）そのまま出す
     const needExhibit = target.lead > EXHIBIT_GRACE_LEAD;
-    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 19000), { needExhibit });
+    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 19000), { needExhibit, needEV: true });
     timing.predict = Date.now() - tPred;
     if (got.wait)  { await release(); return res.json({ ok: true, skipped: `${got.wait}（締切${target.lead}分前）。次の実行で投稿します`, target, timing }); }
     if (got.error) { await release(); return res.json({ ok: false, target, error: got.error, timing }); }
