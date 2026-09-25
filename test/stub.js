@@ -61,6 +61,7 @@ function createStub() {
     tideStations: ['TK'],       // 気象庁にこの地点だけがある状態にする
     resultFailFirst: 0,         // 結果ページの最初のN回だけ失敗させる（取り直しの確認用）
     resultNoData: false,        // 結果ページの代わりに「データがありません」を返す
+    oddsFailFirst: 0,           // 3連単オッズの最初のN回だけ失敗させる
     geminiCalls: 0,
     lastPrompt: '',
     tweets: [],
@@ -178,6 +179,7 @@ function createStub() {
         if (d.tideStations) state.tideStations = d.tideStations;
         if (d.resultFailFirst !== undefined) state.resultFailFirst = d.resultFailFirst | 0;
         if (d.resultNoData !== undefined) state.resultNoData = !!d.resultNoData;
+        if (d.oddsFailFirst !== undefined) state.oddsFailFirst = d.oddsFailFirst | 0;
         if (d.resetCalls) { state.geminiCalls = 0; state.tweets.length = 0; }
         res.writeHead(200).end('ok');
       });
@@ -194,7 +196,11 @@ function createStub() {
     }
     if (u.pathname.endsWith('/racelist'))   return html(racelistHtml());
     if (u.pathname.endsWith('/beforeinfo')) return html(beforeinfoHtml());
-    if (u.pathname.endsWith('/odds3t'))     return html(odds3tHtml());
+    if (u.pathname.endsWith('/odds3t')) {
+      // 開催ピーク時の boatrace.jp のように、最初の何回かだけ落ちる
+      if (state.oddsFailFirst > 0) { state.oddsFailFirst--; res.writeHead(503).end('busy'); return; }
+      return html(odds3tHtml());
+    }
     if (u.pathname.endsWith('/oddstf'))     return html('<html><body></body></html>');
     if (u.pathname.endsWith('/raceresult')) {
       // 開催ピーク時の boatrace.jp のように、最初の何回かだけ失敗させる

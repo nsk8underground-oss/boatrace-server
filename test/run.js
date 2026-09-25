@@ -218,6 +218,22 @@ async function main() {
     eq('履歴も処理したレース数ぶん残る', ((await redis(['LRANGE', `xlogl:${hd}`, 0, -1])) || []).length, picked.length);
 
     /* ============================================================ */
+    console.log('\n【5.5】3連単オッズが取れないときは投稿しない');
+    // オッズが無いと applyEV は「確率の高い順に6点」を並べるだけになる。
+    // それを投稿し続けると、控除率25%をそのまま被って回収率が落ちる
+    await seedDay(AI_EDGE, [1, 2]);
+    await seed({ oddsFailFirst: 99 });
+    const noOdds = await cron('mode=races');
+    check('オッズが取れなければ投稿を見送る', /オッズ/.test(noOdds.skipped || ''), JSON.stringify(noOdds).slice(0, 200));
+    eq('見送った回はGeminiも消費しない', (await stat()).geminiCalls, 0);
+    // 取り直しが効くこと（1回落ちても2回目で取れる）
+    await seed({ oddsFailFirst: 1 });
+    const retryOdds = await cron('mode=races');
+    check('1回落ちても取り直して投稿できる', retryOdds.ok === true && retryOdds.points > 0,
+      JSON.stringify(retryOdds).slice(0, 200));
+    await seed({ oddsFailFirst: 0 });
+
+    /* ============================================================ */
     console.log('\n【6】見送りは投稿枠を食わない');
     await seedDay(AI_SAME, [5, 6, 7, 8]);
     const kinds = [];
