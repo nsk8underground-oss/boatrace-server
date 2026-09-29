@@ -518,7 +518,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.40';
+const APP_VERSION = 'v3.41';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -1769,15 +1769,18 @@ async function runPredict(auto = false) {
   const predCards = document.getElementById('predCards');
 
   const dateStr = document.getElementById('dateInput').value.replace(/-/g,'');
-  // ex0/ex1: 展示タイム反映前後で別キー — 展示反映後は新しい予想に自動アップグレードされる
+  // ex0/ex1: 展示タイム反映前後で別扱い — 展示反映後は新しい予想に自動アップグレードされる。
+  // 共有キャッシュのキー自体はサーバーが組み立てる（版を上げたときにアプリだけ
+  // 古い版を探し続けて共有予想が見つからなくなるのを防ぐため）
   const hasEx = raceData.racers.some(r => r.exhibitTime != null);
-  const cacheKey = `v6_${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
+  const cacheKey = `${VENUE_JCD}_${dateStr}_${currentRace}_${fixedFirst||'0'}_ex${hasEx?1:0}`;
 
   let sharedData = null;
   if (auto) {
     if (btn.disabled || lastPredKey === cacheKey) return; // 生成中 or 表示済み
     try {
-      const sres = await fetch(`${SERVER_URL}/api/predict-shared?key=${encodeURIComponent(cacheKey)}`, { signal: AbortSignal.timeout(8000) });
+      const q = `jcd=${VENUE_JCD}&hd=${dateStr}&rno=${currentRace}&fixedFirst=${fixedFirst||0}&ex=${hasEx?1:0}`;
+      const sres = await fetch(`${SERVER_URL}/api/predict-shared?${q}`, { signal: AbortSignal.timeout(8000) });
       sharedData = await sres.json();
     } catch { return; }
     if (!sharedData?.found) return; // 共有予想なし → 何もしない
@@ -1850,14 +1853,17 @@ async function runPredict(auto = false) {
       `<strong style="color:var(--gold)">注目: ${escapeHtml(r.focus)}号艇</strong> — ${escapeHtml(r.focus_reason)}`;
 
     // 信頼度バッジ（バー + %）
+    // 市場に寄せて校正した確率は1桁%になることが多い。
+    // 小数を切り捨てて「的中率0%」と書くと嘘になるので、10%未満は小数第1位まで出す
     const confBadge = (pct, color) => {
-      const p = Math.max(0, Math.min(100, parseInt(pct) || 0));
+      const p = Math.max(0, Math.min(100, parseFloat(pct) || 0));
+      const label = p >= 10 ? Math.round(p) : Math.round(p * 10) / 10;
       return `<span style="display:inline-flex;align-items:center;gap:5px;font-family:var(--mono)">`
-        + `<span style="width:56px;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;width:${p}%;height:100%;background:${color}"></span></span>`
-        + `<span style="font-size:10px;font-weight:700;color:${color}">的中率${p}%</span></span>`;
+        + `<span style="width:56px;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;width:${Math.max(p, 2)}%;height:100%;background:${color}"></span></span>`
+        + `<span style="font-size:10px;font-weight:700;color:${color}">的中率${label}%</span></span>`;
     };
-    const mainConf = parseInt(r.main_conf) || 0;
-    const anaConf  = parseInt(r.ana_conf)  || 0;
+    const mainConf = parseFloat(r.main_conf) || 0;
+    const anaConf  = parseFloat(r.ana_conf)  || 0;
     // 期待値 = 的中確率 × オッズ。1.00を超えていれば買う価値がある買い目
     const evBadge = ev => (typeof ev === 'number' && ev > 0)
       ? `<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--gold);margin-left:6px">期待値${ev.toFixed(2)}</span>` : '';
@@ -1908,14 +1914,19 @@ async function runPredict(auto = false) {
 
     // 各買い目の期待値を注記に出す（なぜ買うのかを人気ではなく数字で示す）
     const evMap = Object.fromEntries((r.ev_detail || []).map(d => [d.c, d]));
+    // 確率は市場に寄せて校正したあとの値。AIの生の見積もり(pr)も併記して、
+    // どれだけ差し引いたかが分かるようにする
     const rowNote = (v, i, fallback) => {
       const d = evMap[v];
-      return d ? `期待値${d.ev.toFixed(2)}（確率${d.p}%）` : fallback;
+      if (!d) return fallback;
+      const p1 = n => (n >= 10 ? Math.round(n) : Math.round(n * 10) / 10);
+      const rawPart = (d.pr != null && Math.abs(d.pr - d.p) >= 0.1) ? `／AI素点${p1(d.pr)}%` : '';
+      return `期待値${d.ev.toFixed(2)}（確率${p1(d.p)}%${rawPart}）`;
     };
     if (!matoiList.length && !anaList.length) {
       // 期待値1.0超えが1点も無いレース。無理に買わないことが回収率を守るいちばんの方法
       document.getElementById('predScrollMatoi').innerHTML =
-        `<div class="pred-row" style="color:var(--orange);display:block;padding:12px">⚠️ 見送り推奨 — 期待値1.00を超える買い目がありません。${r.ev_mode === 'noodds' ? '（3連単オッズを取得できませんでした）' : '人気サイドに配当が偏っています。'}</div>`;
+        `<div class="pred-row" style="color:var(--orange);display:block;padding:12px">⚠️ 見送り推奨 — 期待値1.00を超える買い目がありません。${r.ev_mode === 'noodds' ? '（3連単オッズを取得できませんでした）' : r.ev_mode === 'nomarket' ? '（オッズが全120組そろわず市場の見立てを逆算できませんでした）' : 'AIの見立てが市場と大きく食い違う組がありません。'}</div>`;
       document.getElementById('predScrollAna').innerHTML = '';
     } else {
       document.getElementById('predScrollMatoi').innerHTML =

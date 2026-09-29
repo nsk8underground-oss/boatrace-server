@@ -1741,13 +1741,24 @@ app.get('/api/tide', async (req, res) => {
 });
 
 // 共有予想の読み取り専用API: 他ユーザーが生成済みの予想があれば返す（Gemini APIは消費しない）
+// 共有予想があれば返すだけの窓口（生成はしない）。
+// キーの組み立てはサーバーの predictCacheKey に任せる。以前はアプリ側が文字列を
+// 作っていたため、サーバーが版を上げるとアプリが古い版を探し続けて
+// 共有予想が永久に見つからなくなっていた（v6 のまま取り残されていた）
 app.get('/api/predict-shared', async (req, res) => {
-  const key = req.query.key;
-  if (!key || typeof key !== 'string' || key.length > 200) return res.status(400).json({ error: 'key required' });
+  const jcd = String(req.query.jcd || '');
+  const hd  = String(req.query.hd || '');
+  const rno = parseInt(req.query.rno, 10);
+  if (!VENUES[jcd] || !/^\d{8}$/.test(hd) || !(rno >= 1 && rno <= 12)) {
+    return res.status(400).json({ error: 'jcd / hd / rno が不正です' });
+  }
+  const fixedFirst = parseInt(req.query.fixedFirst, 10);
+  const key = predictCacheKey(jcd, hd, rno,
+    fixedFirst >= 1 && fixedFirst <= 6 ? fixedFirst : 0, req.query.ex === '1');
   try {
     const data = await lookupSharedPredict(key);
-    if (data) return res.json({ found: true, ...data, cached: true });
-    res.json({ found: false });
+    if (data) return res.json({ found: true, key, ...data, cached: true });
+    res.json({ found: false, key });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2125,6 +2136,29 @@ const RESULT_WAIT_MIN    = 60;   // 締切からこれだけ経った未確定�
 const SKIP_POST_CAP      = 2;    // 1日に投稿する「見送り」の上限（買い目の投稿枠とは別勘定）
 const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
 
+// AIの確率をどれだけ信用するか（0=市場の見立てだけ / 1=AIの見立てだけ）。
+// 実測（70レース・候補412点）では、AIが「10〜20%」と言った組が実際に当たったのは3.8%、
+// 「5〜10%」と言った組は3.7%で、自分の本命を2〜4倍に過大評価していた。
+// 生の確率をそのまま期待値に使うと全レースが期待値1.0超えになり、見送りが一度も出ず、
+// 結果として毎レース6点を買って控除率25%をそのまま被っていた（回収率80%）。
+// AIの確率と市場の確率の幾何平均を取り、AIが市場と大きく食い違う組だけを残す。
+//
+// 重みの根拠と限界: 実測のバケットは predicted 1.2%→actual 3.2%、3.0%→2.7%、
+// 6.8%→3.7%、13.5%→3.8% で、AIが確率を高く付けた組ほど当たるという関係が
+// ほとんど見えない（ブライアスコアも AI 0.2805 に対し市場 0.1845 で市場の勝ち）。
+// この測定だけを信じるなら重みは0＝市場の確率をそのまま使う＝常に見送りが正しい。
+// ただし的中はまだ13件しかなく、傾きの推定はぶれる。そこで「AIが市場と大きく
+// 食い違う組だけを少量買って測り続ける」ために 0.4 に置く。上げ下げは環境変数で。
+const EV_AI_WEIGHT = (() => {
+  const v = Number(process.env.EV_AI_WEIGHT);
+  return isFinite(v) && v >= 0 && v <= 1 ? v : 0.4;
+})();
+// 校正後の確率がこれ未満の組は買わない（%）。
+// 市場に寄せると、期待値を満たす組は「AIと市場の差が大きい＝人気薄」に偏る。
+// 確率0.3%の組を当てる見積もりは誤差のほうが大きく、3倍外していても分からない。
+// 見積もりの解像度が足りない領域には踏み込まないための下限
+const EV_MIN_P = 0.5;
+
 // ホーム場。開催していればこの場のレースを優先して投稿する。
 // URLに &home=04,21 を付けて一時的に変えられる（&home=none で優先なし）
 const HOME_JCDS = ['04'];    // 04=平和島
@@ -2221,25 +2255,48 @@ function applyEV(pred, odds3t) {
   const sum = rows.reduce((s, r) => s + r.p, 0);
   const k = sum > 100 ? 100 / sum : 1;
   for (const r of rows) {
-    r.p = r.p * k;
+    r.raw = r.p * k;               // AIの生の見積もり（合計を100%に収めただけ）
+    r.p = r.raw;
     r.odds = odds ? (odds[r.combo] ?? null) : null;
-    r.ev = r.odds ? r.p / 100 * r.odds : null;
   }
   pred.ev_scaled = k < 1 ? Math.round(sum) : undefined;
+
+  // AIの確率を市場の見立てに寄せて校正する。
+  // 実測でAIは自分の本命を2〜4倍に過大評価していたので、生の確率で期待値を出すと
+  // どのレースも「期待値1.0超え」に見えてしまい、見送りが一度も発生しなかった。
+  // 各組で幾何平均 p^w × m^(1-w) を取り、さらに候補全体の合計を市場の合計に合わせる。
+  // こうすると期待値は「AIが市場とどれだけ食い違うか」だけで決まるので、
+  // AIが確率を一律に盛っても買い目の判定は動かない。
+  const implied = odds ? marketImplied(odds) : null;
+  let calibrated = false;
+  if (implied) {
+    const ms = rows.map(r => (r.odds > 0 ? implied(r.combo) : null));
+    const gs = rows.map((r, i) => (ms[i] > 0 ? Math.pow(r.raw, EV_AI_WEIGHT) * Math.pow(ms[i], 1 - EV_AI_WEIGHT) : 0));
+    const sg = gs.reduce((s, v) => s + v, 0);
+    const sm = ms.reduce((s, v) => s + (v > 0 ? v : 0), 0);
+    if (sg > 0 && sm > 0) {
+      for (let i = 0; i < rows.length; i++) if (ms[i] > 0) rows[i].p = gs[i] / sg * sm;
+      calibrated = true;
+    }
+  }
+  pred.ev_weight = calibrated ? EV_AI_WEIGHT : null;
+  for (const r of rows) r.ev = r.odds ? r.p / 100 * r.odds : null;
 
   const byP  = (a, b) => b.p - a.p;
   const byEV = (a, b) => b.ev - a.ev;
   // 合計が100%を大きく超える出力は確率の見積もり自体が信用できない。
   // 縮めれば数字は整うが、それで出した期待値を根拠にするのは誠実ではないので、
-  // 期待値は名乗らず確率順に並べるだけにする
+  // 期待値は名乗らず確率順に並べるだけにする。
+  // 市場の見立てを逆算できないとき（欠場などで全120組のオッズが揃わないとき）も、
+  // 校正前の水増しされた確率で期待値を名乗ることになるので、同じく期待値は出さない
   const unreliable = sum > EV_SUM_LIMIT;
-  const usable = unreliable ? [] : rows.filter(r => r.ev != null);
+  const usable = (unreliable || !calibrated) ? [] : rows.filter(r => r.ev != null);
 
   let main, ana;
   if (usable.length) {
     // 期待値が基準を超えた買い目だけを採用する。
     // そのうち当たりやすい順に本線、残りの高配当 side を穴として足す
-    const qual = usable.filter(r => r.ev >= EV_MIN_MAIN);
+    const qual = usable.filter(r => r.ev >= EV_MIN_MAIN && r.p >= EV_MIN_P);
     // 期待値で絞ったうえで、そのなかで当たりやすい順に本線を採る。
     // 期待値順で採ると本線が最も人気薄の並びばかりになり、穴との区別がなくなるため
     main = qual.slice().sort(byP).slice(0, MAX_MAIN);
@@ -2253,13 +2310,16 @@ function applyEV(pred, odds3t) {
     const sorted = rows.slice().sort(byP);
     main = sorted.slice(0, MAX_MAIN);
     ana  = sorted.slice(MAX_MAIN, MAX_MAIN + MAX_ANA);
-    pred.ev_mode = unreliable ? 'unreliable' : 'noodds';
+    pred.ev_mode = unreliable ? 'unreliable' : !odds ? 'noodds' : !calibrated ? 'nomarket' : 'noodds';
   }
 
   // 期待値（1点100円あたりの期待回収）と的中確率を、選んだ買い目から実際に計算する
   const stats = list => {
     if (!list.length) return { conf: 0, ev: null };
-    const conf = Math.round(list.reduce((s, r) => s + r.p, 0));
+    // 校正後の確率は1桁%になることが多い。整数に丸めて「的中率0%」と書くと
+    // 嘘になるので、10%未満は小数第1位まで残す
+    const sump = list.reduce((s, r) => s + r.p, 0);
+    const conf = sump >= 10 ? Math.round(sump) : +sump.toFixed(1);
     const haveOdds = list.every(r => r.ev != null);
     return { conf, ev: haveOdds ? +(list.reduce((s, r) => s + r.ev, 0) / list.length).toFixed(2) : null };
   };
@@ -2274,11 +2334,22 @@ function applyEV(pred, odds3t) {
   // 期待値1.0超えが1点も無いレースは「見送り」を出す。
   // 無理に買い目を出すことが回収率を下げるいちばんの原因なので、ここは正直に返す
   pred.ev_skip = pred.ev_mode === 'ev' && !main.length && !ana.length;
+  // p は校正後（実際に期待値を出すのに使った確率）、pr はAIの生の見積もり。
+  // 両方残すのは「校正が効いているか」と「AIの素の精度」を別々に測り続けるため
   pred.ev_detail = rows.filter(r => r.ev != null)
     .sort(byEV).slice(0, 24)
-    .map(r => ({ c: r.combo, p: +r.p.toFixed(1), o: r.odds, ev: +r.ev.toFixed(2) }));
+    .map(r => ({ c: r.combo, p: +r.p.toFixed(2), pr: +r.raw.toFixed(2), o: r.odds, ev: +r.ev.toFixed(2) }));
   return pred;
 }
+
+// 共有予想のキャッシュキー。BOT・アプリ・共有予想の窓口がすべてこれを通ることで、
+// 版を上げたときに片方だけ古い版を探し続ける事故を防ぐ。
+//   v7: 潮位をプロンプトに加えたため、それ以前の予想は使い回さない
+//   v8: 買い目を「市場に寄せて校正した確率」で選ぶようになったため、
+//       v7 で作られた予想（校正前の水増し確率で6点選んでいる）は使わない
+const PREDICT_CACHE_VERSION = 'v8';
+const predictCacheKey = (jcd, hd, rno, fixedFirst, hasEx) =>
+  `${PREDICT_CACHE_VERSION}_${jcd}_${hd}_${rno}_${fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
 
 // 1レース分のデータを集めて予想を取得（共有キャッシュ優先・なければ生成して共有キャッシュに保存）
 async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
@@ -2333,15 +2404,14 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   }
   const usedManual = Object.keys(manual).length > 0;
 
-  // v7: 潮位をプロンプトに加えたため、それ以前の予想は使い回さない
-  const cacheKey = `v7_${jcd}_${hd}_${rno}_${opts.fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
+  const cacheKey = predictCacheKey(jcd, hd, rno, opts.fixedFirst || 0, hasEx);
   const cached = usedManual ? null : await lookupSharedPredict(cacheKey);
   if (cached) {
     try {
       const p = JSON.parse(cached.content[0].text);
-      // オッズが無いまま作られた予想は買い目の根拠が無い。
-      // いまオッズが取れているなら、それは使わず作り直す
-      if (!(opts.needEV && p.ev_mode === 'noodds')) {
+      // 期待値を出せないまま作られた予想は買い目の根拠が無い（オッズが取れなかった、
+      // 市場の見立てを逆算できなかった等）。いま材料が揃っているなら使わず作り直す
+      if (!(opts.needEV && p.ev_mode !== 'ev')) {
         return { pred: p, venue, cached: true, envelope: cached, schedule: rl.schedule, odds3t };
       }
     } catch {}
@@ -2490,8 +2560,11 @@ function buildRaceTweet(venue, rno, closeTime, pred) {
   };
   const allM = clean(pred.matoi);
   const allA = clean(pred.ana);
-  const mc = parseInt(pred.main_conf) || 0;
-  const ac = parseInt(pred.ana_conf) || 0;
+  // 校正後の確率は1桁%になる。parseInt で切り捨てると「的中率0%」になってしまうので
+  // 小数第1位まで残す（10%以上は整数のまま）
+  const pct = v => { const n = parseFloat(v) || 0; return n >= 10 ? Math.round(n) : Math.round(n * 10) / 10; };
+  const mc = pct(pred.main_conf);
+  const ac = pct(pred.ana_conf);
   const tail = `\n#競艇 #ボートレース #${venue}`;
   // 期待値（1点100円あたりの期待回収）を見出しに出す。
   // 「人気だから買う」ではなく「期待値が1.0を超えたから買う」ことを読み手に示すため
@@ -2506,7 +2579,7 @@ function buildRaceTweet(venue, rno, closeTime, pred) {
   const cost = n => (n ? ` 計${n}点¥${n * 100}` : '');
   const render = (nm, na) => [
     `🚤${venue} ${rno}R 締切${closeTime}${cost(nm + na)}`,
-    skip ? '⚠️見送り\n人気サイドに配当が偏り、期待値1.0を超える買い目がありません' : '',
+    skip ? '⚠️見送り\n市場の評価と見立てが食い違う組がなく、期待値1.0を超える買い目がありません' : '',
     block('◎本線', mc, pred.ev_main, allM.slice(0, nm)),
     block('★穴', ac, pred.ev_ana, allA.slice(0, na)),
   ].filter(Boolean).join('\n\n') + '\n';
@@ -2590,12 +2663,18 @@ function marketImplied(odds) {
 // 投稿時点の材料（候補の確率・実オッズ・実際に買った組）を残す。
 // レースごとに別キーにして、読んで書き直す競合が起きないようにする
 async function saveCalibSource(hd, jcd, rno, pred, odds3t, bought) {
-  const cand = {};
-  for (const d of pred.ev_detail || []) if (d && d.c) cand[d.c] = d.p;
+  // cand は実際に期待値を出すのに使った校正後の確率、candRaw はAIの生の見積もり。
+  // 校正が効いているかと、AI自体が上手くなっているかを別々に測るため両方残す
+  const cand = {}, candRaw = {};
+  for (const d of pred.ev_detail || []) {
+    if (!d || !d.c) continue;
+    cand[d.c] = d.p;
+    if (d.pr != null) candRaw[d.c] = d.pr;
+  }
   const odds = {};
   for (const [k, v] of Object.entries(odds3t || {})) if (v > 0) odds[k] = Math.round(v * 10) / 10;
   await redisCmd('SET', `calibsrc:${hd}:${jcd}:${rno}`,
-    JSON.stringify({ cand, odds, bought, mode: pred.ev_mode || null }), 'EX', '259200');
+    JSON.stringify({ cand, candRaw, odds, bought, mode: pred.ev_mode || null }), 'EX', '259200');
 }
 
 // 結果が出たレースについて、確率と実際の当たりを突き合わせて記録する。
@@ -2617,18 +2696,23 @@ async function recordCalibration(day, settled) {
     const implied = marketImplied(src.odds);
     const bought = src.bought || [];
     const win = x.result;
-    // 候補ごとの (確率, 当たったか)。校正バケットの材料
-    const cands = Object.entries(src.cand || {}).map(([c, pv]) => [+(+pv).toFixed(2), c === win ? 1 : 0]);
+    // 候補ごとの (確率, 当たったか)。校正バケットの材料。
+    // cands は校正後（買い目を決めるのに使った確率）、candsRaw はAIの生の見積もり
+    const pairs = obj => Object.entries(obj || {}).map(([c, pv]) => [+(+pv).toFixed(2), c === win ? 1 : 0]);
+    const cands = pairs(src.cand);
+    const candsRaw = pairs(src.candRaw);
     entries.push({
       hd: day, jcd: x.jcd, rno: x.rno, win, pay: x.pay || 0,
       mode: src.mode,
-      aiP:  src.cand?.[win] ?? 0,                                  // AIが勝った組に付けた確率
+      aiP:  src.cand?.[win] ?? 0,                                  // 校正後に勝った組に付いていた確率
+      aiPRaw: src.candRaw?.[win] ?? null,                          // AIの生の見積もりが勝った組に置いた確率
       mktP: implied ? implied(win) : null,                          // 市場が同じ組に付けていた確率
       betP: bought.reduce((t, c) => t + (src.cand?.[c] ?? 0), 0),   // 買った組の合計確率（的中予測）
       betMktP: implied ? bought.reduce((t, c) => t + (implied(c) ?? 0), 0) : null,
       hit: bought.includes(win) ? 1 : 0,
       points: bought.length,
       cands,
+      candsRaw,
     });
   }
   if (!entries.length) return { skipped: 'no source' };
@@ -2650,11 +2734,50 @@ app.get('/api/calibration', async (req, res) => {
     const races = [...uniq.values()];
     if (!races.length) return res.json({ races: 0, note: '記録がまだありません。投稿と結果まとめが1日ぶん動くと貯まります' });
 
-    const bet = races.filter(r => r.points > 0);
-    const hits = bet.filter(r => r.hit).length;
-    const points = bet.reduce((s, r) => s + r.points, 0);
-    const payout = bet.reduce((s, r) => s + (r.hit ? r.pay : 0), 0);
+    // どの方式で買い目を決めたかの内訳。ここが ev 以外ばかりなら、
+    // 期待値ではなく「確率の高い順」で買っている＝控除率をそのまま被っている
+    const modeOf = r => r.mode || 'unknown';
+    const modes = {};
+    for (const r of races) modes[modeOf(r)] = (modes[modeOf(r)] || 0) + 1;
 
+    // 校正バケット: 「p%と言った組」が実際に何%当たったか。
+    // key='cands' は買い目を決めるのに使った確率、'candsRaw' はAIの生の見積もり
+    const EDGES = [0, 1, 2, 5, 10, 20, 100];
+    const bucketize = (set, key) => {
+      const bs = EDGES.slice(0, -1).map((lo, i) => ({ lo, hi: EDGES[i + 1], n: 0, sumP: 0, hits: 0 }));
+      for (const r of set) {
+        for (const [pv, h] of r[key] || []) {
+          const b = bs.find(b => pv >= b.lo && pv < b.hi) || bs[bs.length - 1];
+          b.n++; b.sumP += pv; b.hits += h;
+        }
+      }
+      return bs.filter(b => b.n).map(b => ({
+        range: `${b.lo}〜${b.hi}%`,
+        n: b.n,
+        predicted: +(b.sumP / b.n).toFixed(2),
+        actual: +(b.hits / b.n * 100).toFixed(2),
+      }));
+    };
+
+    // 1つの集団（全体・方式別）についての成績。
+    // 方式が混ざった回収率は読み違いのもとなので、方式ごとにも出す
+    const summarize = set => {
+      const bet = set.filter(r => r.points > 0);
+      const points = bet.reduce((s, r) => s + r.points, 0);
+      const payout = bet.reduce((s, r) => s + (r.hit ? r.pay : 0), 0);
+      return {
+        races: set.length,
+        bet: bet.length,
+        skipped: set.length - bet.length,
+        hit: bet.filter(r => r.hit).length,
+        points,
+        invested: points * 100,
+        payout,
+        roi: points ? Math.round(payout / (points * 100) * 100) : null,
+      };
+    };
+
+    const bet = races.filter(r => r.points > 0);
     // ブライアスコア（小さいほど良い）。AIの見立てと市場の見立てを同じ買い目で比べる
     const withMkt = bet.filter(r => r.betMktP != null);
     const brier = arr => arr.length ? +(arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(4) : null;
@@ -2663,36 +2786,21 @@ app.get('/api/calibration', async (req, res) => {
 
     // 勝った組に、AIと市場がそれぞれ何%を置いていたか（平均）
     const winCmp = races.filter(r => r.mktP != null);
-    const mean = a => a.length ? +(a.reduce((s, v) => s + v, 0) / a.length).toFixed(2) : null;
+    const mean = a => { const v = a.filter(x => x != null); return v.length ? +(v.reduce((s, x) => s + x, 0) / v.length).toFixed(2) : null; };
     const aiOnWin  = mean(winCmp.map(r => r.aiP));
     const mktOnWin = mean(winCmp.map(r => r.mktP));
 
-    // 校正バケット: 「p%と言った組」が実際に何%当たったか
-    const EDGES = [0, 1, 2, 5, 10, 20, 100];
-    const buckets = EDGES.slice(0, -1).map((lo, i) => ({ lo, hi: EDGES[i + 1], n: 0, sumP: 0, hits: 0 }));
-    for (const r of races) {
-      for (const [pv, h] of r.cands || []) {
-        const b = buckets.find(b => pv >= b.lo && pv < b.hi) || buckets[buckets.length - 1];
-        b.n++; b.sumP += pv; b.hits += h;
-      }
-    }
-
-    // どの方式で買い目を決めたかの内訳。ここが ev 以外ばかりなら、
-    // 期待値ではなく「確率の高い順」で買っている＝控除率をそのまま被っている
-    const modes = {};
-    for (const r of races) modes[r.mode || 'unknown'] = (modes[r.mode || 'unknown'] || 0) + 1;
+    // ev 以外の方式は「確率順に6点」を買っていた頃の記録なので、
+    // 校正の効きを見るときはこれを混ぜない
+    const evOnly = races.filter(r => modeOf(r) === 'ev');
 
     res.json({
-      races: races.length,
-      bet: bet.length,
-      skipped: races.length - bet.length,
+      ...summarize(races),
       modes,
       withOdds: races.filter(r => r.mktP != null).length,
-      hit: hits,
-      points,
-      invested: points * 100,
-      payout,
-      roi: points ? Math.round(payout / (points * 100) * 100) : null,
+      // 方式ごとの成績。ev だけを見れば「期待値方式そのもの」の成績になる
+      byMode: Object.fromEntries(Object.keys(modes).sort().map(m =>
+        [m, summarize(races.filter(r => modeOf(r) === m))])),
       // 勝った組への見立て比較。AIが市場を下回り続けるなら期待値方式は価値を生んでいない
       winner: { n: winCmp.length, aiMeanP: aiOnWin, marketMeanP: mktOnWin,
         verdict: aiOnWin == null || mktOnWin == null ? null
@@ -2701,13 +2809,14 @@ app.get('/api/calibration', async (req, res) => {
       brier: { ai: brierAI, market: brierMkt,
         verdict: brierAI == null || brierMkt == null ? null
           : brierAI < brierMkt ? 'AIの確率のほうが正確' : '市場の確率のほうが正確' },
-      calibration: buckets.filter(b => b.n).map(b => ({
-        range: `${b.lo}〜${b.hi}%`,
-        n: b.n,
-        predicted: +(b.sumP / b.n).toFixed(2),
-        actual: +(b.hits / b.n * 100).toFixed(2),
-      })),
-      note: '予測(predicted)と実績(actual)が近いほど確率の見積もりが正確。races が30を超えるまでは参考値',
+      // 買い目を決めるのに使った確率（校正後）の当たり具合
+      calibration: bucketize(evOnly, 'cands'),
+      // AIの生の見積もりの当たり具合。ここが predicted ≫ actual なら
+      // AIは自分の本命を過大評価している＝校正で市場に寄せる必要がある
+      calibrationRaw: bucketize(evOnly, 'candsRaw'),
+      note: '予測(predicted)と実績(actual)が近いほど確率の見積もりが正確。'
+        + 'calibration は mode=ev のレースだけを対象にしている（それ以前は確率順に6点買っていたので混ぜられない）。'
+        + 'roi は100レースぶん貯まるまで大きくぶれる',
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2991,6 +3100,9 @@ app.all('/api/auto-post', async (req, res) => {
       if (sc >= SKIP_POST_CAP) {
         // 同じレースを毎回作り直さないよう、印は残したまま次のレースへ進める
         await redisCmd('SET', `xposted:${hd}:${target.jcd}:${target.rno}`, '1', 'EX', '86400');
+        // 投稿しなくても「買わない判断が正しかったか」は測れるので材料は残す。
+        // 見送りが増える設計なので、ここを捨てると校正の材料が偏る
+        try { await saveCalibSource(hd, target.jcd, target.rno, got.pred, got.odds3t, []); } catch {}
         return res.json({ ok: true, skipped: `見送りの投稿上限(${SKIP_POST_CAP}件)に達しているため投稿しません`, target, timing });
       }
     }

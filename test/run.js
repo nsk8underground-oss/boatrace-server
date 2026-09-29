@@ -86,7 +86,7 @@ async function main() {
     const del = [`xlog:${hd}`, `xlogl:${hd}`, `xcount:${hd}`, `xskip:${hd}`, `xresult:${hd}`, `calibdone:${hd}`, 'xhold'];
     for (let r = 1; r <= 12; r++) {
       del.push(`xposted:${hd}:04:${r}`, `calibsrc:${hd}:04:${r}`);
-      del.push(`predict:v7_04_${hd}_${r}_0_ex1`, `predict:v7_04_${hd}_${r}_0_ex0`);
+      del.push(`predict:v8_04_${hd}_${r}_0_ex1`, `predict:v8_04_${hd}_${r}_0_ex0`);
     }
     del.push(`tide:TK:${hd}`);
     await seed({
@@ -134,10 +134,50 @@ async function main() {
     check('確率の合計が過大なら期待値を出さない', inflated.ev_mode === 'unreliable', inflated.ev_mode);
 
     /* ============================================================ */
+    console.log('\n【2.5】AIの確率を市場に寄せて校正する');
+    // 実測でAIは自分の本命を2〜4倍に過大評価していた。生の確率で期待値を出すと
+    // どのレースも1.0超えに見えて見送りが一度も出ず、控除率をそのまま被っていた
+    check('校正に使った重みを返す', edge.ev_weight === 0.4, `ev_weight=${edge.ev_weight}`);
+    const rawOf = c => edge.ev_detail.find(d => d.c === c);
+    check('校正後の確率(p)と生の見積もり(pr)を両方残す',
+      edge.ev_detail.every(d => typeof d.p === 'number' && typeof d.pr === 'number'),
+      JSON.stringify(edge.ev_detail.slice(0, 2)));
+    // 市場より高く見ている組は、市場に寄せたぶん確率が下がる（=期待値も下がる）
+    const over = edge.ev_detail.filter(d => d.pr > d.p);
+    check('市場より高く見ている組は確率が下がる', over.length > 0 && over.every(d => d.p < d.pr),
+      JSON.stringify(over.slice(0, 3)));
+    check('校正後の期待値は生の期待値より小さい',
+      over.every(d => d.ev <= d.pr / 100 * d.o + 1e-9),
+      JSON.stringify(over.slice(0, 3)));
+
+    // 校正のいちばんの目的: AIが確率を一律に盛っても買い目の判定が動かないこと。
+    // 合計を上限内に収めたまま倍率をかけても、選ばれる買い目は変わらないはず
+    const x2 = applyEV({ cands: AI_EDGE.map(c => ({ ...c, p: c.p * 2 })) }, odds);
+    check('確率を一律2倍に盛っても方式は ev のまま', x2.ev_mode === 'ev', x2.ev_mode);
+    eq('確率を一律に盛っても買い目は変わらない', [x2.matoi, x2.ana], [edge.matoi, edge.ana]);
+
+    // 市場の見立てを逆算できない（オッズが全120組そろわない）ときは期待値を名乗らない。
+    // 校正前の水増しされた確率で「期待値1.2」と書くのは誠実ではない
+    const few = Object.fromEntries(Object.entries(odds).slice(0, 40));
+    const nomkt = applyEV({ cands: AI_EDGE.map(c => ({ ...c })) }, few);
+    check('市場の見立てを逆算できなければ期待値を出さない', nomkt.ev_mode === 'nomarket', nomkt.ev_mode);
+    check('その場合は期待値を表示しない', nomkt.ev_main === null && nomkt.ev_ana === null,
+      `ev_main=${nomkt.ev_main} ev_ana=${nomkt.ev_ana}`);
+
+    // 確率の見積もりが粗すぎる領域（校正後0.5%未満）には踏み込まない
+    check('校正後の確率が下限未満の組は買わない',
+      [...edge.matoi, ...edge.ana].every(c => rawOf(c).p >= 0.5),
+      JSON.stringify([...edge.matoi, ...edge.ana].map(c => [c, rawOf(c).p])));
+
+    // 校正後の確率は1桁%になる。整数に丸めて「的中率0%」と書くと嘘になる
+    check('的中率は小数第1位まで残す（0%と書かない）',
+      edge.main_conf > 0, `main_conf=${edge.main_conf}`);
+
+    /* ============================================================ */
     console.log('\n【3】/api/predict はアプリの文面を受け付けない');
-    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v7_04_${hd}_12_0_ex1` });
+    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v8_04_${hd}_12_0_ex1` });
     check('旧形式（prompt指定）は400で拒否される', legacy.status === 400, `status=${legacy.status} ${JSON.stringify(legacy.body)}`);
-    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v7_04_${hd}_12_0_ex1`]), null);
+    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v8_04_${hd}_12_0_ex1`]), null);
     for (const [label, body] of [
       ['会場コードが不正', { jcd: '99', hd, rno: 1 }],
       ['日付が不正', { jcd: '04', hd: 'x', rno: 1 }],
@@ -157,7 +197,17 @@ async function main() {
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
     check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm/.test(st3.lastPrompt),
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
-    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v7_04_${hd}_12_0_ex1`])));
+    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v8_04_${hd}_12_0_ex1`])));
+
+    // 共有予想の窓口。アプリがキー文字列を自分で組み立てていた頃は、サーバーが
+    // 版を上げるとアプリだけ古い版(v6)を探し続け、共有予想が永久に見つからなかった。
+    // キーの組み立てをサーバーに寄せたので、同じ材料を渡せば必ず見つかる
+    const sh = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=12&fixedFirst=0&ex=1`);
+    check('アプリと同じ材料で共有予想が見つかる', sh.body.found === true, JSON.stringify(sh.body).slice(0, 160));
+    check('どのキーで探したかも返す', sh.body.key === `v8_04_${hd}_12_0_ex1`, sh.body.key);
+    const shNo = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=11&fixedFirst=0&ex=1`);
+    check('無いレースは found=false', shNo.body.found === false, JSON.stringify(shNo.body).slice(0, 120));
+    check('材料が不正なら400', (await getJ(`/api/predict-shared?jcd=99&hd=${hd}&rno=12`)).status === 400);
     const p2 = await postJ('/api/predict', { jcd: '04', hd, rno: 12 });
     check('2回目はキャッシュが返りGeminiを呼ばない', p2.body.cached === true && (await stat()).geminiCalls === before3 + 1);
     check('表示用の3連単オッズも一緒に返る', Object.keys(p2.body.odds3t || {}).length > 50);
