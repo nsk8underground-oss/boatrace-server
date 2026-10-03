@@ -322,6 +322,41 @@ async function main() {
     check('買い目どおりに来たレースを的中として数える', (calib.body.hit || 0) >= 1, JSON.stringify(calib.body).slice(0, 300));
     check('AIと市場の見立てを比べている',
       typeof calib.body.brier?.ai === 'number' && typeof calib.body.brier?.market === 'number', JSON.stringify(calib.body.brier));
+
+    // 校正前(w=null)と校正後(w付き)を混ぜると、回収率も校正バケットも読めなくなる。
+    // 同じ ev でも別勘定にすること
+    check('校正後の記録だけの成績を返す', calib.body.calibrated?.races >= 1,
+      JSON.stringify(calib.body.calibrated));
+    eq('使った重みも分かる', calib.body.calibrated?.weights, [0.4]);
+    check('ブライアスコアは校正後だけで出す', calib.body.brier?.calibratedOnly === true,
+      JSON.stringify(calib.body.brier));
+    // 校正前の記録を1件混ぜても、校正後の集計には入らないこと
+    await redis(['RPUSH', 'calib:log', JSON.stringify({
+      hd: '20200101', jcd: '04', rno: 1, win: '1-2-3', pay: 99999, mode: 'ev', w: null,
+      bought: ['1-2-3'], points: 1, hit: 1, betP: 50, betMktP: 3, aiP: 50, aiPRaw: 50, mktP: 3,
+      cands: [[50, 1]], candsRaw: [[50, 1]] })]);
+    const mixed = await getJ('/api/calibration');
+    eq('校正前の記録は全体には入る', mixed.body.races, (calib.body.races || 0) + 1);
+    eq('校正前の記録は校正後の集計に入らない', mixed.body.calibrated?.races, calib.body.calibrated?.races);
+    check('校正前の水増し確率は校正バケットに入らない',
+      !(mixed.body.calibration || []).some(b => b.range === '20〜100%'),
+      JSON.stringify(mixed.body.calibration));
+    // 日別。校正を入れた日とそれ以前が並ぶ
+    check('日別の成績を返す', Array.isArray(mixed.body.byDay) && mixed.body.byDay.length >= 2,
+      JSON.stringify(mixed.body.byDay));
+    check('日別に校正の有無が付く', mixed.body.byDay.some(d => d.cal === true) && mixed.body.byDay.some(d => d.cal === false),
+      JSON.stringify(mixed.body.byDay.map(d => [d.hd, d.cal])));
+    eq('直近1日に絞れる', (await getJ('/api/calibration?days=1')).body.byDay?.length, 1);
+
+    // 1レースずつの明細。回収率やバケットの平均では「どの予想がどう外れたか」が見えない
+    const det = await getJ(`/api/calibration?detail=1&days=1`);
+    check('明細を1レースずつ返す', det.body.rows?.length >= 1, JSON.stringify(det.body).slice(0, 200));
+    const row = (det.body.rows || []).find(r => r.points > 0) || {};
+    check('買った組が分かる', Array.isArray(row.bought) && row.bought.length === row.points,
+      JSON.stringify(row));
+    check('着順と配当が分かる', typeof row.win === 'string' && typeof row.pay === 'number', JSON.stringify(row));
+    check('同じ組に市場が置いていた確率も並ぶ', typeof row.betMktP === 'number', JSON.stringify(row));
+    await redis(['RPOP', 'calib:log']);   // 積んだ校正前の記録を外して元に戻す
     // 2度集計しても二重に記録しない
     await redis(['DEL', `xresult:${hd}`]);
     const res2 = await cron('mode=results');
