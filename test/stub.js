@@ -40,6 +40,9 @@ function createStub() {
       case 'SADD': { if (!list.has(k)) list.set(k, []); const a = list.get(k); let n = 0; for (let i = 1; i < rest.length; i++) if (!a.includes(String(rest[i]))) { a.push(String(rest[i])); n++; } return n; }
       case 'SMEMBERS': return list.get(k) || [];
       case 'RPUSH': { if (!list.has(k)) list.set(k, []); for (let i = 1; i < rest.length; i++) list.get(k).push(String(rest[i])); return list.get(k).length; }
+      // テストで積んだ記録を元に戻すために使う（本物のRedisにもある）
+      case 'RPOP': { const a = list.get(k); return a && a.length ? a.pop() : null; }
+      case 'LPOP': { const a = list.get(k); return a && a.length ? a.shift() : null; }
       case 'LRANGE': case 'LTRIM': {
         const a = list.get(k) || [];
         let st = parseInt(rest[1], 10), en = parseInt(rest[2], 10);

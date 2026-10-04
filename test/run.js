@@ -86,7 +86,7 @@ async function main() {
     const del = [`xlog:${hd}`, `xlogl:${hd}`, `xcount:${hd}`, `xskip:${hd}`, `xresult:${hd}`, `calibdone:${hd}`, 'xhold'];
     for (let r = 1; r <= 12; r++) {
       del.push(`xposted:${hd}:04:${r}`, `calibsrc:${hd}:04:${r}`);
-      del.push(`predict:v8_04_${hd}_${r}_0_ex1`, `predict:v8_04_${hd}_${r}_0_ex0`);
+      del.push(`predict:v9_04_${hd}_${r}_0_ex1`, `predict:v9_04_${hd}_${r}_0_ex0`);
     }
     del.push(`tide:TK:${hd}`);
     await seed({
@@ -150,11 +150,33 @@ async function main() {
       over.every(d => d.ev <= d.pr / 100 * d.o + 1e-9),
       JSON.stringify(over.slice(0, 3)));
 
-    // 校正のいちばんの目的: AIが確率を一律に盛っても買い目の判定が動かないこと。
+    // 校正の目的その1: AIが確率を一律に盛っても買い目の判定が動かないこと。
     // 合計を上限内に収めたまま倍率をかけても、選ばれる買い目は変わらないはず
     const x2 = applyEV({ cands: AI_EDGE.map(c => ({ ...c, p: c.p * 2 })) }, odds);
     check('確率を一律2倍に盛っても方式は ev のまま', x2.ev_mode === 'ev', x2.ev_mode);
     eq('確率を一律に盛っても買い目は変わらない', [x2.matoi, x2.ana], [edge.matoi, edge.ana]);
+    const x3 = applyEV({ cands: AI_EDGE.map(c => ({ ...c, p: c.p * 3 })) }, odds);
+    eq('3倍に盛っても買い目は変わらない', [x3.matoi, x3.ana], [edge.matoi, edge.ana]);
+
+    // 校正の目的その2: 見送りが実際に出ること。
+    // 候補の中の相対で判定していたときは、候補が20組あれば平均より目立つ組が必ずあり、
+    // 構造的に見送りが起きなかった（本番40レースで見送り2回）。
+    // 「市場の何倍と見たか」の絶対値で判定するので、見立てが市場に近いレースは見送る
+    check('校正の方式を記録する', edge.ev_scheme === 2, `ev_scheme=${edge.ev_scheme}`);
+    const nudge = w => topCands([0.45 - w, 0.20, 0.14, 0.11 + w, 0.06, 0.04]);
+    const ptsOf = r => (r.matoi || []).length + (r.ana || []).length;
+    const small = applyEV({ cands: nudge(0.04) }, odds);   // 4号を+4%だけ高く見る
+    check('見立てが市場に近ければ見送る', small.ev_skip === true && ptsOf(small) === 0,
+      `points=${ptsOf(small)} ev_skip=${small.ev_skip}`);
+    const big = applyEV({ cands: nudge(0.13) }, odds);     // 4号を+13%高く見る
+    check('大きく食い違えば買い目が出る', big.ev_mode === 'ev' && ptsOf(big) > 0, JSON.stringify(big.matoi));
+    // ズレが大きいほど点数が増える向きであること（判定が絶対値で効いている証拠）
+    check('食い違いが大きいほど点数が増える', ptsOf(big) > ptsOf(small),
+      `small=${ptsOf(small)} big=${ptsOf(big)}`);
+    // 買った組は「市場の見立てより明確に高く見ている」ものだけであること
+    const bought = [...big.matoi, ...big.ana].map(c => big.ev_detail.find(d => d.c === c));
+    check('買うのは市場より高く見た組だけ', bought.every(d => d && d.p > 0),
+      JSON.stringify(bought.map(d => [d.c, d.p, d.ev])));
 
     // 市場の見立てを逆算できない（オッズが全120組そろわない）ときは期待値を名乗らない。
     // 校正前の水増しされた確率で「期待値1.2」と書くのは誠実ではない
@@ -175,9 +197,9 @@ async function main() {
 
     /* ============================================================ */
     console.log('\n【3】/api/predict はアプリの文面を受け付けない');
-    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v8_04_${hd}_12_0_ex1` });
+    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v9_04_${hd}_12_0_ex1` });
     check('旧形式（prompt指定）は400で拒否される', legacy.status === 400, `status=${legacy.status} ${JSON.stringify(legacy.body)}`);
-    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v8_04_${hd}_12_0_ex1`]), null);
+    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v9_04_${hd}_12_0_ex1`]), null);
     for (const [label, body] of [
       ['会場コードが不正', { jcd: '99', hd, rno: 1 }],
       ['日付が不正', { jcd: '04', hd: 'x', rno: 1 }],
@@ -197,14 +219,14 @@ async function main() {
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
     check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm/.test(st3.lastPrompt),
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
-    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v8_04_${hd}_12_0_ex1`])));
+    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v9_04_${hd}_12_0_ex1`])));
 
     // 共有予想の窓口。アプリがキー文字列を自分で組み立てていた頃は、サーバーが
     // 版を上げるとアプリだけ古い版(v6)を探し続け、共有予想が永久に見つからなかった。
     // キーの組み立てをサーバーに寄せたので、同じ材料を渡せば必ず見つかる
     const sh = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=12&fixedFirst=0&ex=1`);
     check('アプリと同じ材料で共有予想が見つかる', sh.body.found === true, JSON.stringify(sh.body).slice(0, 160));
-    check('どのキーで探したかも返す', sh.body.key === `v8_04_${hd}_12_0_ex1`, sh.body.key);
+    check('どのキーで探したかも返す', sh.body.key === `v9_04_${hd}_12_0_ex1`, sh.body.key);
     const shNo = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=11&fixedFirst=0&ex=1`);
     check('無いレースは found=false', shNo.body.found === false, JSON.stringify(shNo.body).slice(0, 120));
     check('材料が不正なら400', (await getJ(`/api/predict-shared?jcd=99&hd=${hd}&rno=12`)).status === 400);
@@ -322,6 +344,41 @@ async function main() {
     check('買い目どおりに来たレースを的中として数える', (calib.body.hit || 0) >= 1, JSON.stringify(calib.body).slice(0, 300));
     check('AIと市場の見立てを比べている',
       typeof calib.body.brier?.ai === 'number' && typeof calib.body.brier?.market === 'number', JSON.stringify(calib.body.brier));
+
+    // 校正前(w=null)と校正後(w付き)を混ぜると、回収率も校正バケットも読めなくなる。
+    // 同じ ev でも別勘定にすること
+    check('校正後の記録だけの成績を返す', calib.body.calibrated?.races >= 1,
+      JSON.stringify(calib.body.calibrated));
+    eq('使った重みも分かる', calib.body.calibrated?.weights, [0.4]);
+    check('ブライアスコアは校正後だけで出す', calib.body.brier?.calibratedOnly === true,
+      JSON.stringify(calib.body.brier));
+    // 校正前の記録を1件混ぜても、校正後の集計には入らないこと
+    await redis(['RPUSH', 'calib:log', JSON.stringify({
+      hd: '20200101', jcd: '04', rno: 1, win: '1-2-3', pay: 99999, mode: 'ev', w: null,
+      bought: ['1-2-3'], points: 1, hit: 1, betP: 50, betMktP: 3, aiP: 50, aiPRaw: 50, mktP: 3,
+      cands: [[50, 1]], candsRaw: [[50, 1]] })]);
+    const mixed = await getJ('/api/calibration');
+    eq('校正前の記録は全体には入る', mixed.body.races, (calib.body.races || 0) + 1);
+    eq('校正前の記録は校正後の集計に入らない', mixed.body.calibrated?.races, calib.body.calibrated?.races);
+    check('校正前の水増し確率は校正バケットに入らない',
+      !(mixed.body.calibration || []).some(b => b.range === '20〜100%'),
+      JSON.stringify(mixed.body.calibration));
+    // 日別。校正を入れた日とそれ以前が並ぶ
+    check('日別の成績を返す', Array.isArray(mixed.body.byDay) && mixed.body.byDay.length >= 2,
+      JSON.stringify(mixed.body.byDay));
+    check('日別に校正の有無が付く', mixed.body.byDay.some(d => d.cal === true) && mixed.body.byDay.some(d => d.cal === false),
+      JSON.stringify(mixed.body.byDay.map(d => [d.hd, d.cal])));
+    eq('直近1日に絞れる', (await getJ('/api/calibration?days=1')).body.byDay?.length, 1);
+
+    // 1レースずつの明細。回収率やバケットの平均では「どの予想がどう外れたか」が見えない
+    const det = await getJ(`/api/calibration?detail=1&days=1`);
+    check('明細を1レースずつ返す', det.body.rows?.length >= 1, JSON.stringify(det.body).slice(0, 200));
+    const row = (det.body.rows || []).find(r => r.points > 0) || {};
+    check('買った組が分かる', Array.isArray(row.bought) && row.bought.length === row.points,
+      JSON.stringify(row));
+    check('着順と配当が分かる', typeof row.win === 'string' && typeof row.pay === 'number', JSON.stringify(row));
+    check('同じ組に市場が置いていた確率も並ぶ', typeof row.betMktP === 'number', JSON.stringify(row));
+    await redis(['RPOP', 'calib:log']);   // 積んだ校正前の記録を外して元に戻す
     // 2度集計しても二重に記録しない
     await redis(['DEL', `xresult:${hd}`]);
     const res2 = await cron('mode=results');
