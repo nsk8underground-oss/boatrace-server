@@ -2158,6 +2158,12 @@ const EV_AI_WEIGHT = (() => {
 // 確率0.3%の組を当てる見積もりは誤差のほうが大きく、3倍外していても分からない。
 // 見積もりの解像度が足りない領域には踏み込まないための下限
 const EV_MIN_P = 0.5;
+// 校正のやり方を変えたら上げる。方式が違う記録を混ぜると、回収率も校正バケットも
+// 読めなくなる（noodds を混ぜて読み違えた失敗を、同じ ev の中でまた繰り返さないため）。
+//   1: 候補の合計を市場の合計に合わせる方式。基準が候補内の相対になり見送りが出なかった
+//   2: 先に候補全体の総量を市場に揃えたうえで、候補に入らなかった組も分母に加える方式。
+//      基準が「市場の何倍と見たか」の絶対値になり、かつ確率を盛っても買い目が増えない
+const CALIB_SCHEME = 2;
 
 // ホーム場。開催していればこの場のレースを優先して投稿する。
 // URLに &home=04,21 を付けて一時的に変えられる（&home=none で優先なし）
@@ -2264,22 +2270,41 @@ function applyEV(pred, odds3t) {
   // AIの確率を市場の見立てに寄せて校正する。
   // 実測でAIは自分の本命を2〜4倍に過大評価していたので、生の確率で期待値を出すと
   // どのレースも「期待値1.0超え」に見えてしまい、見送りが一度も発生しなかった。
-  // 各組で幾何平均 p^w × m^(1-w) を取り、さらに候補全体の合計を市場の合計に合わせる。
-  // こうすると期待値は「AIが市場とどれだけ食い違うか」だけで決まるので、
-  // AIが確率を一律に盛っても買い目の判定は動かない。
+  // 各組で幾何平均 p^w × m^(1-w) を取り、確率として成立するよう合計を100%に揃える。
+  //
+  // 揃える範囲が肝心。候補20組の合計だけを市場の合計に合わせていたとき（方式1）、
+  // 期待値は「自分の候補の中で相対的に目立つか」だけで決まっていた。候補が20組も
+  // あれば平均より目立つ組はほぼ必ず存在するので、構造的に見送りが起きない。
+  // 実測でも校正後40レースのうち見送りは2回しか出なかった。
+  //
+  // そこで、AIが挙げなかった100組を「市場と同意見（比 = 1）」として分母に加える。
+  // 期待値は候補どうしの比較ではなく「AIが市場より何倍あると見たか」の絶対値で決まり、
+  // AIの見立てが市場とおおむね一致するレースは全組が基準に届かず見送りになる。
+  //
+  // ただし分母を変えるだけだと、AIが確率を一律に盛ったぶんがそのまま比を押し上げ、
+  // 盛った出力ほど買い目が増えてしまう（校正を入れる前と同じ失敗）。
+  // そこで先に、候補全体の確率の総量を、同じ組に市場が置いている総量に揃える。
+  // AIは「当たりはこの候補の中にある」を実測より多く見積もる（84%と言って実際は54%）。
+  // ここで揃えておけば、以降の判定はAIの確率の『配分』だけで決まる。
   const implied = odds ? marketImplied(odds) : null;
   let calibrated = false;
   if (implied) {
     const ms = rows.map(r => (r.odds > 0 ? implied(r.combo) : null));
-    const gs = rows.map((r, i) => (ms[i] > 0 ? Math.pow(r.raw, EV_AI_WEIGHT) * Math.pow(ms[i], 1 - EV_AI_WEIGHT) : 0));
-    const sg = gs.reduce((s, v) => s + v, 0);
     const sm = ms.reduce((s, v) => s + (v > 0 ? v : 0), 0);
-    if (sg > 0 && sm > 0) {
-      for (let i = 0; i < rows.length; i++) if (ms[i] > 0) rows[i].p = gs[i] / sg * sm;
+    const sraw = rows.reduce((s, r, i) => s + (ms[i] > 0 ? r.raw : 0), 0);
+    const pre = sraw > 0 ? sm / sraw : 0;      // 総量を市場に揃える係数
+    const gs = rows.map((r, i) => (ms[i] > 0 && pre > 0
+      ? Math.pow(r.raw * pre, EV_AI_WEIGHT) * Math.pow(ms[i], 1 - EV_AI_WEIGHT) : 0));
+    const sg = gs.reduce((s, v) => s + v, 0);
+    // 候補に入らなかった組は「AIは何も言っていない＝市場と同意見」として分母に加える
+    const total = sg + Math.max(0, 100 - sm);
+    if (sg > 0 && sm > 0 && total > 0) {
+      for (let i = 0; i < rows.length; i++) if (ms[i] > 0) rows[i].p = gs[i] / total * 100;
       calibrated = true;
     }
   }
   pred.ev_weight = calibrated ? EV_AI_WEIGHT : null;
+  pred.ev_scheme = calibrated ? CALIB_SCHEME : null;
   for (const r of rows) r.ev = r.odds ? r.p / 100 * r.odds : null;
 
   const byP  = (a, b) => b.p - a.p;
@@ -2347,7 +2372,9 @@ function applyEV(pred, odds3t) {
 //   v7: 潮位をプロンプトに加えたため、それ以前の予想は使い回さない
 //   v8: 買い目を「市場に寄せて校正した確率」で選ぶようになったため、
 //       v7 で作られた予想（校正前の水増し確率で6点選んでいる）は使わない
-const PREDICT_CACHE_VERSION = 'v8';
+//   v9: 校正の正規化の範囲を変えた（方式2）。v8 の買い目は候補内の相対で選ばれていて、
+//       見送りが構造的に起きなかったため使わない
+const PREDICT_CACHE_VERSION = 'v9';
 const predictCacheKey = (jcd, hd, rno, fixedFirst, hasEx) =>
   `${PREDICT_CACHE_VERSION}_${jcd}_${hd}_${rno}_${fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
 
@@ -2678,7 +2705,7 @@ async function saveCalibSource(hd, jcd, rno, pred, odds3t, bought) {
   // 回収率を読み違える（noodds が混ざっていたときと同じ失敗）
   await redisCmd('SET', `calibsrc:${hd}:${jcd}:${rno}`,
     JSON.stringify({ cand, candRaw, odds, bought, mode: pred.ev_mode || null,
-      w: pred.ev_weight ?? null }), 'EX', '259200');
+      w: pred.ev_weight ?? null, cs: pred.ev_scheme ?? null }), 'EX', '259200');
 }
 
 // 結果が出たレースについて、確率と実際の当たりを突き合わせて記録する。
@@ -2709,6 +2736,7 @@ async function recordCalibration(day, settled) {
       hd: day, jcd: x.jcd, rno: x.rno, win, pay: x.pay || 0,
       mode: src.mode,
       w: src.w ?? null,                                            // 校正の重み（null=校正前の記録）
+      cs: src.cs ?? null,                                          // 校正の方式（null=方式を記録する前）
       bought,                                                      // 実際に買った組（見送りなら空）
       aiP:  src.cand?.[win] ?? 0,                                  // 校正後に勝った組に付いていた確率
       aiPRaw: src.candRaw?.[win] ?? null,                          // AIの生の見積もりが勝った組に置いた確率
@@ -2757,7 +2785,7 @@ app.get('/api/calibration', async (req, res) => {
             .localeCompare(b.hd + b.jcd + String(b.rno).padStart(2, '0')))
           .map(r => ({
             hd: r.hd, venue: VENUES[r.jcd] || r.jcd, rno: r.rno,
-            mode: r.mode, w: r.w ?? null,
+            mode: r.mode, w: r.w ?? null, cs: r.cs ?? null,
             bought: r.bought || null,            // 買った組（空配列=見送り / null=記録前）
             points: r.points,
             win: r.win, pay: r.pay, hit: r.hit,
@@ -2783,6 +2811,9 @@ app.get('/api/calibration', async (req, res) => {
     // 水増しされた確率で6点選んでいるので、混ぜると回収率も校正バケットも読めない
     const isCal = r => r.w != null;
     const calRaces = races.filter(isCal);
+    // いま動いている校正方式の記録。方式が違えば買い方も確率も違うので、
+    // 「この設定は効いているか」を見るときはここだけを対象にする
+    const curRaces = calRaces.filter(r => (r.cs ?? 1) === CALIB_SCHEME);
 
     // 校正バケット: 「p%と言った組」が実際に何%当たったか。
     // key='cands' は買い目を決めるのに使った確率、'candsRaw' はAIの生の見積もり
@@ -2823,7 +2854,7 @@ app.get('/api/calibration', async (req, res) => {
 
     // ブライアスコア（小さいほど良い）。AIの見立てと市場の見立てを同じ買い目で比べる。
     // 校正後の記録があればそれだけで比べる（校正前の betP は水増しされているため）
-    const brierSet = (calRaces.length ? calRaces : races).filter(r => r.points > 0);
+    const brierSet = (curRaces.length ? curRaces : calRaces.length ? calRaces : races).filter(r => r.points > 0);
     const withMkt = brierSet.filter(r => r.betMktP != null);
     const brier = arr => arr.length ? +(arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(4) : null;
     const brierAI  = brier(brierSet.map(r => Math.pow(r.betP / 100 - r.hit, 2)));
@@ -2837,8 +2868,13 @@ app.get('/api/calibration', async (req, res) => {
     const aiOnWin  = mean(winCmp.map(r => r.aiPRaw ?? r.aiP));
     const mktOnWin = mean(winCmp.map(r => r.mktP));
 
-    // 校正バケットの対象。校正後の記録があればそれだけ、無ければ ev のレース全体
-    const bucketSet = calRaces.length ? calRaces : races.filter(r => modeOf(r) === 'ev');
+    // 校正バケットの対象。いまの方式の記録があればそれだけ、無ければ校正後の記録、
+    // それも無ければ ev のレース全体。件数が少なくても混ぜない（混ぜると読めない）
+    const bucketSet = curRaces.length ? curRaces
+      : calRaces.length ? calRaces : races.filter(r => modeOf(r) === 'ev');
+    const bucketScope = curRaces.length ? `校正方式${CALIB_SCHEME}の${curRaces.length}レース`
+      : calRaces.length ? `校正後の${calRaces.length}レース（方式は混在）`
+      : `mode=ev の${bucketSet.length}レース（校正前）`;
 
     // 日ごとの成績。「数日ぶんを振り返る」ときは、混ざった1つの回収率より
     // 日別の並びのほうが、何が起きたか分かる
@@ -2848,9 +2884,14 @@ app.get('/api/calibration', async (req, res) => {
       ...summarize(races),
       modes,
       withOdds: races.filter(r => r.mktP != null).length,
-      // 校正を入れたあとの記録だけの成績。いま判断に使うべきはこちら
+      // 校正を入れたあとの記録だけの成績。いま判断に使うべきはこちら。
+      // 校正の方式が違えば買い方も違うので、方式ごとにも分けておく
       calibrated: calRaces.length
-        ? { ...summarize(calRaces), weights: [...new Set(calRaces.map(r => r.w))].sort() }
+        ? { ...summarize(calRaces),
+            weights: [...new Set(calRaces.map(r => r.w))].sort(),
+            byScheme: Object.fromEntries([...new Set(calRaces.map(r => r.cs ?? 1))].sort()
+              .map(cs => [cs, summarize(calRaces.filter(r => (r.cs ?? 1) === cs))])),
+            current: CALIB_SCHEME }
         : { races: 0, note: '校正後の記録がまだありません（結果まとめが1日ぶん動くと貯まります）' },
       // 方式ごとの成績。ev だけを見れば「期待値方式そのもの」の成績になる
       byMode: Object.fromEntries(Object.keys(modes).sort().map(m =>
@@ -2858,13 +2899,16 @@ app.get('/api/calibration', async (req, res) => {
       // 日別。校正を入れた日から skipped が増え、points が減っているはず
       byDay: days.map(d => {
         const set = races.filter(r => r.hd === d);
-        return { hd: d, cal: set.every(isCal) ? true : set.some(isCal) ? 'mixed' : false, ...summarize(set) };
+        const schemes = [...new Set(set.map(r => (isCal(r) ? (r.cs ?? 1) : 0)))].sort();
+        return { hd: d, cal: set.every(isCal) ? true : set.some(isCal) ? 'mixed' : false,
+          cs: schemes.length === 1 ? schemes[0] : schemes, ...summarize(set) };
       }),
       // 勝った組への見立て比較。AIが市場を下回り続けるなら期待値方式は価値を生んでいない
       winner: { n: winCmp.length, aiMeanP: aiOnWin, marketMeanP: mktOnWin,
         verdict: aiOnWin == null || mktOnWin == null ? null
           : aiOnWin > mktOnWin ? 'AIの見立てが市場より勝った組を高く評価できている'
           : 'AIの見立ては市場を上回れていない' },
+      scope: bucketScope,
       brier: { n: brierSet.length, calibratedOnly: calRaces.length > 0, ai: brierAI, market: brierMkt,
         verdict: brierAI == null || brierMkt == null ? null
           : brierAI < brierMkt ? 'AIの確率のほうが正確' : '市場の確率のほうが正確' },
@@ -2874,8 +2918,8 @@ app.get('/api/calibration', async (req, res) => {
       // AIは自分の本命を過大評価している＝校正で市場に寄せる必要がある
       calibrationRaw: bucketize(bucketSet, 'candsRaw'),
       note: '予測(predicted)と実績(actual)が近いほど確率の見積もりが正確。'
-        + 'calibration と brier は、校正後(w付き)の記録があればそれだけを対象にする。'
-        + '混ぜると校正前の水増しされた確率が入り、どちらの成績も読めなくなる。'
+        + 'calibration と brier の対象は scope のとおり。校正の方式(cs)が違えば買い方も'
+        + '確率も違うので、件数が少なくても混ぜない。混ぜると、どちらの成績も読めなくなる。'
         + 'roi は100レースぶん貯まるまで大きくぶれる。'
         + '&detail=1 で1レースずつ、&days=N で直近N日に絞れる',
     });
