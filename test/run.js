@@ -365,6 +365,14 @@ async function main() {
 
     // 校正前(w=null)と校正後(w付き)を混ぜると、回収率も校正バケットも読めなくなる。
     // 同じ ev でも別勘定にすること
+    // 環境変数を変えたあと「本当に反映されたか」を確かめる窓口。
+    // Vercelの環境変数は再デプロイするまで効かないので、設定画面ではなくここが実際の値
+    eq('いま動いている重みを返す', calib.body.config?.evAiWeight, 0.4);
+    eq('いま動いている方式も返す', calib.body.config?.scheme, 2);
+    check('返した重みは実際に買い目を決めた重みと一致する',
+      calib.body.calibrated?.weights?.includes(calib.body.config?.evAiWeight),
+      `config=${calib.body.config?.evAiWeight} 記録=${JSON.stringify(calib.body.calibrated?.weights)}`);
+
     check('校正後の記録だけの成績を返す', calib.body.calibrated?.races >= 1,
       JSON.stringify(calib.body.calibrated));
     eq('使った重みも分かる', calib.body.calibrated?.weights, [0.4]);

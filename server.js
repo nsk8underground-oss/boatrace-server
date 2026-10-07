@@ -2779,7 +2779,17 @@ app.get('/api/calibration', async (req, res) => {
     const uniq = new Map();
     for (const e of list) uniq.set(`${e.hd}:${e.jcd}:${e.rno}`, e);
     let races = [...uniq.values()];
-    if (!races.length) return res.json({ races: 0, note: '記録がまだありません。投稿と結果まとめが1日ぶん動くと貯まります' });
+    // 設定の確認は記録が無くてもできるようにする（反映の確認はたいてい変更直後に行う）
+    const config = {
+      evAiWeight: EV_AI_WEIGHT,     // AIの見立てをどれだけ信用するか（環境変数 EV_AI_WEIGHT）
+      scheme: CALIB_SCHEME,         // 校正の方式
+      evMinMain: EV_MIN_MAIN,       // 本線に採用する最低期待値
+      evMinAna: EV_MIN_ANA,         // 穴に要求する期待値
+      anaMinOdds: ANA_MIN_ODDS,     // これ以上を穴として扱う
+      evMinP: EV_MIN_P,             // 校正後の確率がこれ未満の組は買わない
+      maxPoints: MAX_MAIN + MAX_ANA,// 1レースの最大点数
+    };
+    if (!races.length) return res.json({ config, races: 0, note: '記録がまだありません。投稿と結果まとめが1日ぶん動くと貯まります' });
 
     // &days=N で直近N日に絞る。数日ぶんを振り返るときに、古い方式の記録を外せる
     const nDays = parseInt(req.query.days, 10);
@@ -2894,6 +2904,10 @@ app.get('/api/calibration', async (req, res) => {
     const days = [...new Set(races.map(r => r.hd))].sort();
 
     res.json({
+      // いま動いている設定。環境変数を変えたあと「本当に反映されたか」を確かめる窓口。
+      // Vercelの環境変数は再デプロイするまで反映されないため、設定画面の値ではなく
+      // ここに出ている値が実際に買い目を決めている
+      config,
       ...summarize(races),
       modes,
       withOdds: races.filter(r => r.mktP != null).length,
