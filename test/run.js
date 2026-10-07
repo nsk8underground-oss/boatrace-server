@@ -369,6 +369,11 @@ async function main() {
     // Vercelの環境変数は再デプロイするまで効かないので、設定画面ではなくここが実際の値
     eq('いま動いている重みを返す', calib.body.config?.evAiWeight, 0.4);
     eq('いま動いている方式も返す', calib.body.config?.scheme, 2);
+    // 重み(EV_AI_WEIGHT)を変えると買い方が変わるが、方式番号は変わらない。
+    // 分けておかないと変更前後の成績が混ざって読めなくなる
+    eq('重みごとの成績も分けて返す', Object.keys(calib.body.calibrated?.byWeight || {}), ['0.4']);
+    eq('いまの設定を明示する', calib.body.calibrated?.current, { scheme: 2, weight: 0.4 });
+    check('バケットが何を対象にしたかを書く', /重み0\.4/.test(calib.body.scope || ''), calib.body.scope);
     check('返した重みは実際に買い目を決めた重みと一致する',
       calib.body.calibrated?.weights?.includes(calib.body.config?.evAiWeight),
       `config=${calib.body.config?.evAiWeight} 記録=${JSON.stringify(calib.body.calibrated?.weights)}`);
@@ -386,6 +391,19 @@ async function main() {
     const mixed = await getJ('/api/calibration');
     eq('校正前の記録は全体には入る', mixed.body.races, (calib.body.races || 0) + 1);
     eq('校正前の記録は校正後の集計に入らない', mixed.body.calibrated?.races, calib.body.calibrated?.races);
+    // 重みだけが違う記録（方式は同じ2）を混ぜても、いまの重みの集計には入らないこと
+    await redis(['RPUSH', 'calib:log', JSON.stringify({
+      hd: '20200102', jcd: '04', rno: 2, win: '1-2-3', pay: 88888, mode: 'ev', w: 0.9, cs: 2,
+      bought: ['1-2-3'], points: 1, hit: 1, betP: 40, betMktP: 3, aiP: 40, aiPRaw: 40, mktP: 3,
+      cands: [[40, 1]], candsRaw: [[40, 1]] })]);
+    const w9 = await getJ('/api/calibration');
+    eq('重みごとに分かれる', Object.keys(w9.body.calibrated?.byWeight || {}), ['0.4', '0.9']);
+    eq('いまの重みの成績は増えない', w9.body.calibrated?.byWeight?.['0.4']?.races,
+      calib.body.calibrated?.byWeight?.['0.4']?.races);
+    check('別の重みの確率は校正バケットに入らない',
+      !(w9.body.calibration || []).some(b => b.range === '20〜100%'),
+      JSON.stringify(w9.body.calibration));
+    await redis(['RPOP', 'calib:log']);
     check('校正前の水増し確率は校正バケットに入らない',
       !(mixed.body.calibration || []).some(b => b.range === '20〜100%'),
       JSON.stringify(mixed.body.calibration));

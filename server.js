@@ -2834,9 +2834,10 @@ app.get('/api/calibration', async (req, res) => {
     // 水増しされた確率で6点選んでいるので、混ぜると回収率も校正バケットも読めない
     const isCal = r => r.w != null;
     const calRaces = races.filter(isCal);
-    // いま動いている校正方式の記録。方式が違えば買い方も確率も違うので、
+    // いま動いている設定（方式と重みの両方）の記録。設定が違えば買い方も確率も違うので、
     // 「この設定は効いているか」を見るときはここだけを対象にする
-    const curRaces = calRaces.filter(r => (r.cs ?? 1) === CALIB_SCHEME);
+    const curScheme = calRaces.filter(r => (r.cs ?? 1) === CALIB_SCHEME);
+    const curRaces = curScheme.filter(r => r.w === EV_AI_WEIGHT);
 
     // 校正バケット: 「p%と言った組」が実際に何%当たったか。
     // key='cands' は買い目を決めるのに使った確率、'candsRaw' はAIの生の見積もり
@@ -2894,8 +2895,12 @@ app.get('/api/calibration', async (req, res) => {
     // 校正バケットの対象。いまの方式の記録があればそれだけ、無ければ校正後の記録、
     // それも無ければ ev のレース全体。件数が少なくても混ぜない（混ぜると読めない）
     const bucketSet = curRaces.length ? curRaces
+      : curScheme.length ? curScheme
       : calRaces.length ? calRaces : races.filter(r => modeOf(r) === 'ev');
-    const bucketScope = curRaces.length ? `校正方式${CALIB_SCHEME}の${curRaces.length}レース`
+    const bucketScope = curRaces.length
+        ? `いまの設定（方式${CALIB_SCHEME}・重み${EV_AI_WEIGHT}）の${curRaces.length}レース`
+      : curScheme.length
+        ? `方式${CALIB_SCHEME}の${curScheme.length}レース（重みは${[...new Set(curScheme.map(r => r.w))].sort().join('/')}で、いまの${EV_AI_WEIGHT}とは別）`
       : calRaces.length ? `校正後の${calRaces.length}レース（方式は混在）`
       : `mode=ev の${bucketSet.length}レース（校正前）`;
 
@@ -2918,7 +2923,11 @@ app.get('/api/calibration', async (req, res) => {
             weights: [...new Set(calRaces.map(r => r.w))].sort(),
             byScheme: Object.fromEntries([...new Set(calRaces.map(r => r.cs ?? 1))].sort()
               .map(cs => [cs, summarize(calRaces.filter(r => (r.cs ?? 1) === cs))])),
-            current: CALIB_SCHEME }
+            // 重み(EV_AI_WEIGHT)を変えると買い方が変わる。方式番号は変わらないので、
+            // ここで分けておかないと変更前後の成績が混ざって読めなくなる
+            byWeight: Object.fromEntries([...new Set(calRaces.map(r => r.w))].sort()
+              .map(w => [w, summarize(calRaces.filter(r => r.w === w))])),
+            current: { scheme: CALIB_SCHEME, weight: EV_AI_WEIGHT } }
         : { races: 0, note: '校正後の記録がまだありません（結果まとめが1日ぶん動くと貯まります）' },
       // 方式ごとの成績。ev だけを見れば「期待値方式そのもの」の成績になる
       byMode: Object.fromEntries(Object.keys(modes).sort().map(m =>
