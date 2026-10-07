@@ -2436,10 +2436,23 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   if (cached) {
     try {
       const p = JSON.parse(cached.content[0].text);
+      // 買い目は「いまのオッズ」と「いまの設定」で選び直す。
+      // 高価なのはAIの見立て(cands)だけで、そこから買い目を選ぶ計算はただの算術なので、
+      // 使い回すのは cands だけにする。こうしないと2つ困ることが起きる。
+      //   ・予想は1時間キャッシュされるので、期待値が最大1時間前のオッズで計算される。
+      //     3連単のオッズは締切直前に大きく動くため、投稿した期待値が実際と合わない
+      //   ・EV_AI_WEIGHT を変えても、キャッシュに当たるレースは古い重みの買い目のまま
+      let pred = p;
+      if (Array.isArray(p.cands) && p.cands.length && Object.keys(odds3t).length) {
+        pred = applyEV({ ...p }, odds3t);
+      }
       // 期待値を出せないまま作られた予想は買い目の根拠が無い（オッズが取れなかった、
       // 市場の見立てを逆算できなかった等）。いま材料が揃っているなら使わず作り直す
-      if (!(opts.needEV && p.ev_mode !== 'ev')) {
-        return { pred: p, venue, cached: true, envelope: cached, schedule: rl.schedule, odds3t };
+      if (!(opts.needEV && pred.ev_mode !== 'ev')) {
+        // アプリには選び直した後の内容を返す（保存されている古い買い目を返さない）
+        const envelope = pred === p ? cached
+          : { ...cached, content: [{ ...cached.content[0], text: JSON.stringify(pred) }] };
+        return { pred, venue, cached: true, envelope, schedule: rl.schedule, odds3t };
       }
     } catch {}
   }

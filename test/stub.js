@@ -65,6 +65,7 @@ function createStub() {
     resultFailFirst: 0,         // 結果ページの最初のN回だけ失敗させる（取り直しの確認用）
     resultNoData: false,        // 結果ページの代わりに「データがありません」を返す
     oddsFailFirst: 0,           // 3連単オッズの最初のN回だけ失敗させる
+    oddsScale: 1,               // オッズを一律に動かす（締切直前の変動を再現する）
     geminiCalls: 0,
     lastPrompt: '',
     tweets: [],
@@ -112,7 +113,7 @@ function createStub() {
     let rows = '';
     for (let i = 0; i < 20; i++) {
       let tds = '';
-      for (let g = 0; g < 6; g++) { const e = byFirst[g][i]; tds += `<td>${e[0]}</td><td>${e[1]}</td><td>${e[2].toFixed(1)}</td>`; }
+      for (let g = 0; g < 6; g++) { const e = byFirst[g][i]; tds += `<td>${e[0]}</td><td>${e[1]}</td><td>${(e[2] * state.oddsScale).toFixed(1)}</td>`; }
       rows += `<tr>${tds}</tr>`;
     }
     return `<html><body><table><tbody>${rows}</tbody></table></body></html>`;
@@ -183,6 +184,7 @@ function createStub() {
         if (d.resultFailFirst !== undefined) state.resultFailFirst = d.resultFailFirst | 0;
         if (d.resultNoData !== undefined) state.resultNoData = !!d.resultNoData;
         if (d.oddsFailFirst !== undefined) state.oddsFailFirst = d.oddsFailFirst | 0;
+        if (d.oddsScale !== undefined) state.oddsScale = Number(d.oddsScale) || 1;
         if (d.resetCalls) { state.geminiCalls = 0; state.tweets.length = 0; }
         res.writeHead(200).end('ok');
       });

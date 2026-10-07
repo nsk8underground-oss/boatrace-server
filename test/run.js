@@ -234,6 +234,24 @@ async function main() {
     check('2回目はキャッシュが返りGeminiを呼ばない', p2.body.cached === true && (await stat()).geminiCalls === before3 + 1);
     check('表示用の3連単オッズも一緒に返る', Object.keys(p2.body.odds3t || {}).length > 50);
 
+    // 予想は1時間キャッシュされる。そのあいだオッズは動き続けるので、
+    // 保存時のオッズで計算した期待値をそのまま投稿すると実際と合わない。
+    // キャッシュに当たっても買い目と期待値は「いまのオッズ」で選び直すこと
+    const detailOf = r => JSON.parse(r.body.content[0].text).ev_detail || [];
+    const topEv = d => Math.max(...d.map(x => x.ev));
+    const oddsOf = (d, c) => (d.find(x => x.c === c) || {}).o;
+    const d2 = detailOf(p2), combo = d2[0].c;
+    await seed({ oddsScale: 1.3 });            // 締切直前に配当が上振れた状況
+    const p3 = await postJ('/api/predict', { jcd: '04', hd, rno: 12 });
+    const d3 = detailOf(p3);
+    check('保存時ではなく いまのオッズを使う', oddsOf(d3, combo) > oddsOf(d2, combo) * 1.25,
+      `${combo}: 保存時${oddsOf(d2, combo)}倍 → いま${oddsOf(d3, combo)}倍`);
+    check('期待値もいまのオッズで計算し直す', topEv(d3) > topEv(d2) * 1.25,
+      `最高期待値 ${topEv(d2)} → ${topEv(d3)}`);
+    eq('計算し直してもGeminiは呼ばない', (await stat()).geminiCalls, before3 + 1);
+    check('キャッシュ扱いのままであること', p3.body.cached === true, JSON.stringify(p3.body.cached));
+    await seed({ oddsScale: 1 });
+
     // 買い目診断も同じ方針（アプリからは買い目だけを受け取る）
     check('買い目診断も文面は受け付けない', (await postJ('/api/advise', { prompt: 'x' })).status === 400);
     check('買い目が不正なら400', (await postJ('/api/advise', { jcd: '04', hd, rno: 1, combo: '1-1-1' })).status === 400);
