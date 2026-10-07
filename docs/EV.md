@@ -132,7 +132,9 @@ https://<あなたのドメイン>/api/calibration
 |---|---|
 | `config` | **いま実際に動いている設定。** 環境変数を変えたあとの確認はここで |
 | `calibrated` | 校正を入れたあとの記録だけの成績 |
-| `calibrated.byScheme` | 校正の方式ごとの成績。`current` がいま動いている方式 |
+| `calibrated.byScheme` | 校正の方式ごとの成績 |
+| `calibrated.byWeight` | 重みごとの成績。`EV_AI_WEIGHT` を変えたら、ここで前後を分けて読む |
+| `calibrated.current` | いま動いている方式と重み |
 | `scope` | `calibration` と `brier` が何を対象に集計されたか |
 | `modes` | `ev` 以外が混じっていたら、そのレースは期待値で選べていない |
 | `byDay` | 日別。`cal` が校正の有無。校正を入れた日から `skipped` が増えるはず |
@@ -141,7 +143,8 @@ https://<あなたのドメイン>/api/calibration
 | `calibrationRaw` | AIの生の見積もりの当たり具合。AI自体が上手くなったかはここで見る |
 | `brier` | AIと市場、どちらの確率が正確か |
 
-`calibration` と `brier` は、いま動いている方式（`cs`）の記録があればそれだけを対象にします。
+`calibration` と `brier` は、いま動いている設定（方式 `cs` と重み `w` の両方）の記録が
+あればそれだけを対象にします。何を対象にしたかは `scope` に出ます。
 **同じ `mode=ev` でも、校正を入れる前は水増しされた確率で6点選んでいます**し、
 方式1と方式2でも買い方が違います。混ぜるとどちらの成績も読めなくなります
 （`noodds` が混ざっていたときと同じ失敗を、`ev` の中で繰り返さないため）。
