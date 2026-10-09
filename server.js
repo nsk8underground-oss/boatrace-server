@@ -2162,6 +2162,17 @@ const EV_AI_WEIGHT = (() => {
 // 確率0.3%の組を当てる見積もりは誤差のほうが大きく、3倍外していても分からない。
 // 見積もりの解像度が足りない領域には踏み込まないための下限
 const EV_MIN_P = 0.5;
+// 買う組の最低オッズ。既定の1は「制限なし」で、いままでと同じ動き。
+//
+// 当たったときの配当を大きくしたいときに使う。買った組のオッズがばらけていると、
+// 「当たったときの配当」は平均ではなく調和平均に寄る。安い組ほど当たりやすいので、
+// 30倍と150倍を一緒に買えば当たるのはたいてい30倍のほうになる。
+// 高い組を足すのではなく、安い組を買うのをやめないと配当は上がらない。
+// 上げるほど的中は遠のき、期待値の検証に必要なレース数も増える（環境変数で変えられる）
+const EV_MIN_ODDS = (() => {
+  const v = Number(process.env.EV_MIN_ODDS);
+  return isFinite(v) && v >= 1 && v <= 500 ? v : 1;
+})();
 // 校正のやり方を変えたら上げる。方式が違う記録を混ぜると、回収率も校正バケットも
 // 読めなくなる（noodds を混ぜて読み違えた失敗を、同じ ev の中でまた繰り返さないため）。
 //   1: 候補の合計を市場の合計に合わせる方式。基準が候補内の相対になり見送りが出なかった
@@ -2362,7 +2373,7 @@ function applyEV(pred, odds3t) {
   if (usable.length) {
     // 期待値が基準を超えた買い目だけを採用する。
     // そのうち当たりやすい順に本線、残りの高配当 side を穴として足す
-    const qual = usable.filter(r => r.ev >= EV_MIN_MAIN && r.p >= EV_MIN_P);
+    const qual = usable.filter(r => r.ev >= EV_MIN_MAIN && r.p >= EV_MIN_P && r.odds >= EV_MIN_ODDS);
     // 期待値で絞ったうえで、そのなかで当たりやすい順に本線を採る。
     // 期待値順で採ると本線が最も人気薄の並びばかりになり、穴との区別がなくなるため
     main = qual.slice().sort(byP).slice(0, MAX_MAIN);
@@ -2811,6 +2822,9 @@ async function recordCalibration(day, settled) {
       betMktP: implied ? bought.reduce((t, c) => t + (implied(c) ?? 0), 0) : null,
       hit: bought.includes(win) ? 1 : 0,
       points: bought.length,
+      // 買った組のオッズ。「安い的中ばかり」かどうかは、当たった配当だけでなく
+      // 何倍の組を買っているかを見ないと分からない
+      boughtOdds: bought.map(c => src.odds?.[c] ?? null),
       cands,
       candsRaw,
     });
@@ -2840,6 +2854,7 @@ app.get('/api/calibration', async (req, res) => {
       evMinAna: EV_MIN_ANA,         // 穴に要求する期待値
       anaMinOdds: ANA_MIN_ODDS,     // これ以上を穴として扱う
       evMinP: EV_MIN_P,             // 校正後の確率がこれ未満の組は買わない
+      evMinOdds: EV_MIN_ODDS,       // これ未満のオッズの組は買わない（1=制限なし）
       maxPoints: MAX_MAIN + MAX_ANA,// 1レースの最大点数
     };
     if (!races.length) return res.json({ config, races: 0, note: '記録がまだありません。投稿と結果まとめが1日ぶん動くと貯まります' });
@@ -2863,6 +2878,7 @@ app.get('/api/calibration', async (req, res) => {
             hd: r.hd, venue: VENUES[r.jcd] || r.jcd, rno: r.rno,
             mode: r.mode, w: r.w ?? null, cs: r.cs ?? null,
             bought: r.bought || null,            // 買った組（空配列=見送り / null=記録前）
+            boughtOdds: r.boughtOdds || null,    // 買った組のオッズ。穴を買えているかはここで見る
             points: r.points,
             win: r.win, pay: r.pay, hit: r.hit,
             betP: r.betP == null ? null : +r.betP.toFixed(2),      // 買った組の合計確率（校正後）

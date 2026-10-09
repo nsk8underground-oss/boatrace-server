@@ -437,6 +437,7 @@ async function main() {
     // Vercelの環境変数は再デプロイするまで効かないので、設定画面ではなくここが実際の値
     eq('いま動いている重みを返す', calib.body.config?.evAiWeight, 0.4);
     eq('いま動いている方式も返す', calib.body.config?.scheme, 2);
+    eq('最低オッズの設定も返す（既定は制限なし）', calib.body.config?.evMinOdds, 1);
     // 重み(EV_AI_WEIGHT)を変えると買い方が変わるが、方式番号は変わらない。
     // 分けておかないと変更前後の成績が混ざって読めなくなる
     eq('重みごとの成績も分けて返す', Object.keys(calib.body.calibrated?.byWeight || {}), ['0.4']);
@@ -490,6 +491,11 @@ async function main() {
       JSON.stringify(row));
     check('着順と配当が分かる', typeof row.win === 'string' && typeof row.pay === 'number', JSON.stringify(row));
     check('同じ組に市場が置いていた確率も並ぶ', typeof row.betMktP === 'number', JSON.stringify(row));
+    // 「安い的中ばかり」かどうかは、当たった配当だけでなく何倍の組を買っているかで決まる
+    check('買った組のオッズも分かる',
+      Array.isArray(row.boughtOdds) && row.boughtOdds.length === row.points
+        && row.boughtOdds.every(o => typeof o === 'number' && o > 1),
+      JSON.stringify(row.boughtOdds));
     await redis(['RPOP', 'calib:log']);   // 積んだ校正前の記録を外して元に戻す
     // 2度集計しても二重に記録しない
     await redis(['DEL', `xresult:${hd}`]);
