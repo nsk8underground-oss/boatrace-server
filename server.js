@@ -400,7 +400,10 @@ function parseBeforeinfo(html) {
   const entries = {};
   const getEntry = lane => entries[lane] || (entries[lane] = { lane, course: null, exhibitTime: null, st: null });
 
-  // スタート展示テーブル（実ページ）: 表示順 = 進入コース順。艇番とSTを取得
+  // スタート展示テーブル（実ページ）: 表示順 = 進入コース順。艇番とSTを取得。
+  // 進入はここからしか取らない。以前は下の展示タイム表の1〜2列目にある1〜6の数字を
+  // 保険として拾っていたが、それは進入ではなくただの数字で、間違った隊形を作りうる。
+  // 進入は投稿にも載せるので、推測した隊形を出すくらいなら「未確定」のほうがよい
   $('.table1_boatImage1').each((i, el) => {
     const lane = parseInt(normDigits($(el).find('.table1_boatImage1Number').first().text().trim()));
     if (!(lane >= 1 && lane <= 6)) return;
@@ -421,20 +424,19 @@ function parseBeforeinfo(html) {
     if (isNaN(lane) || lane < 1 || lane > 6) return;
     if (entries[lane]?.exhibitTime != null) return;
 
-    let exhibitTime = null, courseFb = null, stFb = null;
+    let exhibitTime = null, stFb = null;
     for (let i = 1; i < cells.length; i++) {
       const t = normDigits(cells.eq(i).text().replace(/\s+/g, ''));
       if (exhibitTime == null && /^[5-8]\.\d{2}$/.test(t)) {
         const v = parseFloat(t);
         if (v >= 5 && v < 8.5) { exhibitTime = v; continue; }
       }
-      if (courseFb == null && i <= 2 && /^[1-6]$/.test(t)) { courseFb = parseInt(t); continue; }
+
       if (stFb == null && /^F?0?\.\d{2}$/.test(t)) { const m = t.match(/\.(\d{2})$/); stFb = parseFloat('0.' + m[1]); }
     }
     if (exhibitTime != null || stFb != null) {
       const en = getEntry(lane);
       if (en.exhibitTime == null) en.exhibitTime = exhibitTime;
-      if (en.course == null && courseFb != null) en.course = courseFb;
       if (en.st == null && stFb != null) en.st = stFb;
     }
   });
@@ -442,7 +444,9 @@ function parseBeforeinfo(html) {
   const exhibitMap = {};
   Object.values(entries).forEach(en => {
     if (en.exhibitTime == null && en.st == null) return;
-    if (en.course == null) en.course = en.lane;
+    // 進入が読めなかったときに枠番で埋めない。埋めてしまうと「進入が分からない」と
+    // 「枠なり進入だと分かっている」を区別できなくなり、スタート展示の解析が
+    // 失敗したレースで、確信を持って枠なりの展開を予想してしまう
     exhibitMap[en.lane] = en;
   });
 
@@ -1366,7 +1370,7 @@ app.get('/api/all', async (req, res) => {
       odds: odds.odds[r.lane] || null,
       exhibitTime: before.exhibit[r.lane]?.exhibitTime || null,
       exhibitST:   before.exhibit[r.lane]?.st || null,
-      course:      before.exhibit[r.lane]?.course || r.lane,
+      course:      before.exhibit[r.lane]?.course ?? null,   // 不明は不明のまま返す
     }));
     // 潮位は boatrace.jp に無いので気象庁の推算値を天候情報に足して返す
     const responseData = { ...rl, weather: {
@@ -2191,6 +2195,10 @@ const EV_PROMPT_RULES = `【重要・予想の方針】
   "focus_reason": "80文字以内",
   "cands": [{"c":"1-2-3","p":18},{"c":"1-3-2","p":9}]
 }
+展開の文章（tenkai_main / tenkai_ana / analysis）では、艇を必ず「N号艇」と書いてください。
+「Nコース」という書き方はしないこと。進入が変わったレースで号艇とコース番号を取り違え、
+「6コースから逃げ」のような成立しない文章を書く事故を防ぐためです。
+決まり手は上の定義どおりに使ってください（1コース以外の艇に「逃げ」はありません）。
 candsは3連単の候補を18〜24組。cは "艇番-艇番-艇番" 形式、pは的中確率(%)の見積もり（小数可）。
 3連単の各組は同時に起こらないので、pの合計は100を超えないこと。
 p が 1 未満になるほど薄い組は入れないこと。同じ組を重複させないこと。
@@ -2209,28 +2217,61 @@ function motorLine(r) {
 
 // opts: { fixedFirst, tide } — 1着固定の指定と、気象庁から取った潮位があれば足す。
 // プロンプト本体はサーバーだけが組み立てる（アプリから文面を受け取ると共有キャッシュを汚せるため）
+// 進入（スタート展示で確定したコース順）。6艇ぶんが1〜6で揃っているときだけ採用する。
+// 半分だけ取れた進入は、取れていないより危ない（ありもしない隊形をAIに渡すことになる）
+function entryOrder(racers) {
+  const cs = racers.map(r => r.course);
+  if (cs.length !== 6 || new Set(cs).size !== 6 || cs.some(c => !(c >= 1 && c <= 6))) return null;
+  return [...racers].sort((a, b) => a.course - b.course);
+}
+
 function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
-  const lines = racers.map(r =>
-    `${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
+  // 艇の情報はコース順に並べる。レースを決めるのは枠番ではなく進入だから。
+  // 号艇順のまま「コース:1」を行末に置いていたときは、AIが号艇とコースを取り違え、
+  // 進入が変わったレースで枠なり前提の展開を書いていた（6号艇が1コースなのに「6コースから逃げ」）
+  const order = entryOrder(racers);
+  const row = r =>
+    `${order ? `${r.course}コース ` : ''}${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
     `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
     `モーター:${motorLine(r)} ` +
-    `コース:${r.course ?? '未定'} 展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`
-  ).join('\n');
+    `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`;
+
+  let lines, shinnyu;
+  if (order) {
+    const changed = order.some(r => r.course !== r.lane);
+    shinnyu = `【進入】${order.map(r => r.lane).join('-')}（コース1から順の艇番）`
+      + (changed ? '\n★枠なりではありません。枠番ではなくコースで展開を考えてください。' : '（枠なり進入）');
+    lines = [
+      'スロー勢（1〜3コース・助走が短く、内から先にターンできる）',
+      ...order.filter(r => r.course <= 3).map(r => ' ' + row(r)),
+      'ダッシュ勢（4〜6コース・助走が長く、速度をつけて外から攻める）',
+      ...order.filter(r => r.course >= 4).map(r => ' ' + row(r)),
+    ].join('\n');
+  } else {
+    shinnyu = '【進入】スタート展示がまだ出ていないため未確定。枠なり（1号艇が1コース）を想定してください。';
+    lines = racers.map(row).join('\n');
+  }
 
   const fix = opts.fixedFirst
     ? `\n【1着固定】${opts.fixedFirst}号艇を1着に固定。candsは全て${opts.fixedFirst}-?-? の形式にすること。` : '';
 
-  // 進入コース（スタート展示で確定）と風向は展開を最も左右する。
-  // 取れているのに渡さないと、展示待ちをした意味が半分無くなる
   return `ボートレース専門予想師として以下の最新データを分析し、JSON形式のみで回答してください。
 
 【${venue} 第${rno}レース】
 天候:${weather.sky || '不明'} 風向:${weather.windDir || '不明'} 風速:${weather.wind ?? '不明'}m/s 水温:${weather.water ?? '不明'}℃ 波高:${weather.wave ?? '不明'}cm${opts.tide ? `
 潮位:${opts.tide}（気象庁の推算値）` : ''}
-（コースは展示で確定した進入。「未定」は枠なり想定）${fix}
 
-【出走表（boatrace.jp 実データ）】
+${shinnyu}${fix}
+
+【出走表（boatrace.jp 実データ・コース順）】
 ${lines}
+
+【決まり手の定義（守ること）】
+逃げ … 1コースの艇が先頭のままターンして押し切る。1コース以外の艇に「逃げ」はありません。
+差し … 先にターンした艇の内側を突いて前に出る。
+まくり … 外のコースから先頭の艇をねじ伏せて先にターンする。ダッシュ勢の主武器。
+まくり差し … まくりに行くと見せて、内を差して抜ける。
+※「Nコース」はスタート位置、「N号艇」は枠番です。進入が変わると両者は一致しません。
 
 ${EV_PROMPT_RULES}`;
 }
@@ -2374,7 +2415,9 @@ function applyEV(pred, odds3t) {
 //       v7 で作られた予想（校正前の水増し確率で6点選んでいる）は使わない
 //   v9: 校正の正規化の範囲を変えた（方式2）。v8 の買い目は候補内の相対で選ばれていて、
 //       見送りが構造的に起きなかったため使わない
-const PREDICT_CACHE_VERSION = 'v9';
+//   v10: 進入（スタート展示のコース）をプロンプトの主役に据えた。v9 以前の予想は
+//        号艇順の出走表から作られていて、進入が変わったレースで枠なり前提になっている
+const PREDICT_CACHE_VERSION = 'v10';
 const predictCacheKey = (jcd, hd, rno, fixedFirst, hasEx) =>
   `${PREDICT_CACHE_VERSION}_${jcd}_${hd}_${rno}_${fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
 
@@ -2486,6 +2529,10 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   let pred;
   try { pred = applyEV(JSON.parse(g.jsonText), odds3t); }
   catch { return { error: '予想の解析に失敗' }; }
+  // 進入を予想と一緒に残す。投稿を見た人が「枠なりではない」と分かるようにするため。
+  // キャッシュに入る側に持たせるので、使い回したときも同じ進入が出る
+  const eo = entryOrder(racers);
+  pred.shinnyu = eo ? eo.map(r => r.lane) : null;
   const result = { content: [{ text: JSON.stringify(pred) }], model: g.model, at: new Date().toISOString(),
     by: opts.by === undefined ? 'AI BOT' : String(opts.by).slice(0, 12) };
   if (!usedManual) await storePredict(cacheKey, result);
@@ -2617,8 +2664,14 @@ function buildRaceTweet(venue, rno, closeTime, pred) {
   const skip = pred.ev_skip && !allM.length && !allA.length;
   // 何点でいくら必要かを明記する。読み手が実際に買える規模かどうかが分かるように
   const cost = n => (n ? ` 計${n}点¥${n * 100}` : '');
+  // 進入が枠なりでないレースは、それを書かないと買い目の理由が読み手に通じない。
+  // 枠なりのときは当たり前なので書かない（文字数は280しかない）
+  const sn = Array.isArray(pred.shinnyu) && pred.shinnyu.length === 6
+    && pred.shinnyu.some((lane, i) => lane !== i + 1)
+    ? `⚠️進入変更 ${pred.shinnyu.join('-')}（内から）` : '';
   const render = (nm, na) => [
     `🚤${venue} ${rno}R 締切${closeTime}${cost(nm + na)}`,
+    sn,
     skip ? '⚠️見送り\n市場の評価と見立てが食い違う組がなく、期待値1.0を超える買い目がありません' : '',
     block('◎本線', mc, pred.ev_main, allM.slice(0, nm)),
     block('★穴', ac, pred.ev_ana, allA.slice(0, na)),

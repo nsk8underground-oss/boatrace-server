@@ -66,6 +66,7 @@ function createStub() {
     resultNoData: false,        // 結果ページの代わりに「データがありません」を返す
     oddsFailFirst: 0,           // 3連単オッズの最初のN回だけ失敗させる
     oddsScale: 1,               // オッズを一律に動かす（締切直前の変動を再現する）
+    shinnyu: [1, 2, 3, 4, 5, 6],// スタート展示の進入（内から順の艇番）。null でスタート展示なし
     geminiCalls: 0,
     lastPrompt: '',
     tweets: [],
@@ -92,10 +93,17 @@ function createStub() {
     if (!state.hasExhibit) return '<html><body></body></html>';
     let rows = '';
     for (let l = 1; l <= 6; l++) {
-      rows += `<tr><td>${l}</td><td>${7 - l}</td><td>スタブ 太郎${l}</td><td>52.0kg</td><td>${(6.70 + l * 0.02).toFixed(2)}</td><td>-0.5</td></tr>`;
+      rows += `<tr><td>${l}</td><td><img></td><td>スタブ 太郎${l}</td><td>52.0kg</td><td>${(6.70 + l * 0.02).toFixed(2)}</td><td>-0.5</td></tr>`;
     }
+    // スタート展示（実ページと同じ構造）。並び順がそのまま進入コース順になる。
+    // state.shinnyu が null なら、この枠ごと出さない＝展示が出ていない状態を再現する
+    const start = state.shinnyu ? state.shinnyu.map((lane, i) =>
+      `<div class="table1_boatImage1">`
+      + `<span class="table1_boatImage1Number">${lane}</span>`
+      + `<span class="table1_boatImage1TimeInner">.${String(14 + i).padStart(2, '0')}</span>`
+      + `</div>`).join('') : '';
     const wx = '<table><tr><td>天候</td><td>晴</td></tr><tr><td>風向</td><td>北東</td></tr><tr><td>風速</td><td>3</td></tr></table>';
-    return `<html><body>${wx}<table>${rows}</table></body></html>`;
+    return `<html><body>${wx}${start}<table>${rows}</table></body></html>`;
   }
 
   // 市場（＝人気）は1号艇本命。控除率25%ぶんだけ配当が絞られたオッズを作る
@@ -185,6 +193,7 @@ function createStub() {
         if (d.resultNoData !== undefined) state.resultNoData = !!d.resultNoData;
         if (d.oddsFailFirst !== undefined) state.oddsFailFirst = d.oddsFailFirst | 0;
         if (d.oddsScale !== undefined) state.oddsScale = Number(d.oddsScale) || 1;
+        if (d.shinnyu !== undefined) state.shinnyu = Array.isArray(d.shinnyu) ? d.shinnyu : null;
         if (d.resetCalls) { state.geminiCalls = 0; state.tweets.length = 0; }
         res.writeHead(200).end('ok');
       });

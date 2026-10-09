@@ -86,7 +86,7 @@ async function main() {
     const del = [`xlog:${hd}`, `xlogl:${hd}`, `xcount:${hd}`, `xskip:${hd}`, `xresult:${hd}`, `calibdone:${hd}`, 'xhold'];
     for (let r = 1; r <= 12; r++) {
       del.push(`xposted:${hd}:04:${r}`, `calibsrc:${hd}:04:${r}`);
-      del.push(`predict:v9_04_${hd}_${r}_0_ex1`, `predict:v9_04_${hd}_${r}_0_ex0`);
+      del.push(`predict:v10_04_${hd}_${r}_0_ex1`, `predict:v10_04_${hd}_${r}_0_ex0`);
     }
     del.push(`tide:TK:${hd}`);
     await seed({
@@ -196,10 +196,78 @@ async function main() {
       edge.main_conf > 0, `main_conf=${edge.main_conf}`);
 
     /* ============================================================ */
+    console.log('\n【2.7】進入（スロー・ダッシュ）をAIに正しく渡す');
+    // フォロワーの指摘「6コースから逃げ」「進入が変わっても通常進入の予想」の原因は、
+    // 出走表が号艇順で、コースが行末の弱い情報だったこと。AIが号艇とコースを取り違えていた
+    const { buildAutoPrompt } = require('../server.js')._internals;
+    const mkRacers = courses => [1, 2, 3, 4, 5, 6].map(lane => ({
+      lane, name: `選手${lane}`, cls: 'A1', branch: '東京', allRate: 6.5, localRate: 6.2,
+      all2Rate: 45, fl: '0/0', avgST: 0.16, motor2Rate: 38,
+      course: courses ? courses[lane - 1] : null, exhibitTime: 6.7, exhibitST: 0.15,
+    }));
+    const wx = { sky: '晴', windDir: '北東', wind: 3, water: 20, wave: 2 };
+    // 6号艇が最内を奪った進入
+    const maeZuke = buildAutoPrompt('平和島', 5, mkRacers([2, 3, 4, 5, 6, 1]), wx, {});
+    check('進入をコース順で先に示す', /【進入】6-1-2-3-4-5/.test(maeZuke), (maeZuke.match(/【進入】.*/) || [''])[0]);
+    check('枠なりでないことを明示する', maeZuke.includes('★枠なりではありません'));
+    check('最内が6号艇だと分かる形で並ぶ', /1コース 6号艇/.test(maeZuke),
+      (maeZuke.match(/1コース \d号艇/) || [''])[0]);
+    check('スロー勢とダッシュ勢を分ける',
+      maeZuke.includes('スロー勢（1〜3コース') && maeZuke.includes('ダッシュ勢（4〜6コース'));
+    check('ダッシュ勢は4コース以降だけ',
+      /ダッシュ勢[^]*4コース 3号艇[^]*5コース 4号艇[^]*6コース 5号艇/.test(maeZuke));
+    check('決まり手を定義して渡す',
+      ['逃げ …', '差し …', 'まくり …', 'まくり差し …'].every(k => maeZuke.includes(k)));
+    check('1コース以外に逃げが無いと書く', maeZuke.includes('1コース以外の艇に「逃げ」はありません'));
+    check('展開の文章は号艇で書くよう指示する', maeZuke.includes('「Nコース」という書き方はしないこと'));
+
+    // 枠なりのときは「進入変更」と騒がない（毎レース警告が出ると意味が薄れる）
+    const wakunari = buildAutoPrompt('平和島', 5, mkRacers([1, 2, 3, 4, 5, 6]), wx, {});
+    check('枠なりなら警告を出さない', !wakunari.includes('★枠なりではありません') && wakunari.includes('（枠なり進入）'));
+
+    // 展示前はコースが取れない。ありもしない隊形を渡さず、枠なり想定だと伝える
+    const noEx = buildAutoPrompt('平和島', 5, mkRacers(null), wx, {});
+    check('展示前は未確定だと伝える', noEx.includes('スタート展示がまだ出ていないため未確定'));
+    check('展示前はコース番号を書かない', !/\dコース \d号艇/.test(noEx));
+    // 半端に取れた進入は、取れていないより危ない（重複・欠けのある隊形を渡すことになる）
+    const broken = buildAutoPrompt('平和島', 5, mkRacers([1, 1, 3, 4, 5, 6]), wx, {});
+    check('壊れた進入は使わない', broken.includes('スタート展示がまだ出ていないため未確定'),
+      (broken.match(/【進入】.*/) || [''])[0]);
+
+    // 投稿を見た人にも進入変更が分かること
+    const { buildRaceTweet } = require('../server.js')._internals;
+    const basePred = { matoi: ['1-2-3'], ana: [], main_conf: 5, ev_main: 1.1, tenkai_main: 'x' };
+    const twCh = buildRaceTweet('平和島', 5, '15:00', { ...basePred, shinnyu: [6, 1, 2, 3, 4, 5] });
+    check('投稿にも進入変更を載せる', /⚠️進入変更 6-1-2-3-4-5/.test(twCh.text), twCh.text);
+    const twNo = buildRaceTweet('平和島', 5, '15:00', { ...basePred, shinnyu: [1, 2, 3, 4, 5, 6] });
+    check('枠なりなら投稿には載せない', !twNo.text.includes('進入変更'), twNo.text);
+    check('進入が分からなくても落ちない', !buildRaceTweet('平和島', 5, '15:00', basePred).text.includes('進入変更'));
+
+    // 本物のスタート展示から進入を読むところ（ここが壊れると全部が枠なりになる）
+    await seedDay(AI_EDGE, [11]);
+    await seed({ shinnyu: [6, 1, 2, 3, 4, 5] });
+    await postJ('/api/predict', { jcd: '04', hd, rno: 11 });
+    const stSn = await stat();
+    check('スタート展示から進入を読む', /【進入】6-1-2-3-4-5/.test(stSn.lastPrompt),
+      (stSn.lastPrompt.match(/【進入】.*/) || ['進入の行が無い'])[0]);
+    check('読んだ進入でコース順に並べる', /1コース 6号艇/.test(stSn.lastPrompt),
+      (stSn.lastPrompt.match(/1コース \d号艇/) || [''])[0]);
+    // スタート展示が無いページで、別の列の数字を進入と取り違えないこと。
+    // 間違った隊形は、進入が分からないことより悪い（投稿にも載せるため）
+    await seedDay(AI_EDGE, [10]);
+    await seed({ shinnyu: null });
+    await postJ('/api/predict', { jcd: '04', hd, rno: 10 });
+    const stNo = await stat();
+    check('スタート展示が無ければ進入を作らない',
+      stNo.lastPrompt.includes('スタート展示がまだ出ていないため未確定'),
+      (stNo.lastPrompt.match(/【進入】.*/) || [''])[0]);
+    await seed({ shinnyu: [1, 2, 3, 4, 5, 6] });
+
+    /* ============================================================ */
     console.log('\n【3】/api/predict はアプリの文面を受け付けない');
-    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v9_04_${hd}_12_0_ex1` });
+    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v10_04_${hd}_12_0_ex1` });
     check('旧形式（prompt指定）は400で拒否される', legacy.status === 400, `status=${legacy.status} ${JSON.stringify(legacy.body)}`);
-    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v9_04_${hd}_12_0_ex1`]), null);
+    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v10_04_${hd}_12_0_ex1`]), null);
     for (const [label, body] of [
       ['会場コードが不正', { jcd: '99', hd, rno: 1 }],
       ['日付が不正', { jcd: '04', hd: 'x', rno: 1 }],
@@ -211,7 +279,7 @@ async function main() {
     const p1 = await postJ('/api/predict', { jcd: '04', hd, rno: 12, by: 'テスト' });
     check('正しい入力なら予想が返る', p1.status === 200 && !!p1.body.content, JSON.stringify(p1.body).slice(0, 200));
     const st3 = await stat();
-    check('プロンプトはサーバーが組み立てている', st3.lastPrompt.includes('出走表（boatrace.jp 実データ）'),
+    check('プロンプトはサーバーが組み立てている', st3.lastPrompt.includes('出走表（boatrace.jp 実データ'),
       st3.lastPrompt.slice(0, 120));
     // 風向は boatrace.jp の実測をそのまま渡す。アプリ側の手動指定はもう無い
     check('風向は公式の実測が入る', st3.lastPrompt.includes('風向:北東'), st3.lastPrompt.slice(0, 200));
@@ -219,14 +287,14 @@ async function main() {
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
     check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm/.test(st3.lastPrompt),
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
-    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v9_04_${hd}_12_0_ex1`])));
+    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v10_04_${hd}_12_0_ex1`])));
 
     // 共有予想の窓口。アプリがキー文字列を自分で組み立てていた頃は、サーバーが
     // 版を上げるとアプリだけ古い版(v6)を探し続け、共有予想が永久に見つからなかった。
     // キーの組み立てをサーバーに寄せたので、同じ材料を渡せば必ず見つかる
     const sh = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=12&fixedFirst=0&ex=1`);
     check('アプリと同じ材料で共有予想が見つかる', sh.body.found === true, JSON.stringify(sh.body).slice(0, 160));
-    check('どのキーで探したかも返す', sh.body.key === `v9_04_${hd}_12_0_ex1`, sh.body.key);
+    check('どのキーで探したかも返す', sh.body.key === `v10_04_${hd}_12_0_ex1`, sh.body.key);
     const shNo = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=11&fixedFirst=0&ex=1`);
     check('無いレースは found=false', shNo.body.found === false, JSON.stringify(shNo.body).slice(0, 120));
     check('材料が不正なら400', (await getJ(`/api/predict-shared?jcd=99&hd=${hd}&rno=12`)).status === 400);
