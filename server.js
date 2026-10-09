@@ -2287,6 +2287,40 @@ ${lines}
 ${EV_PROMPT_RULES}`;
 }
 
+// AIの確率を市場に寄せて校正し、rows[].p を書き換える。成功したら true。
+// 本番の投稿と、過去データの再計算（/api/replay）がここを共用する。
+// 式が2か所にあると、再計算が本番と違う答えを出しても気づけない
+function calibrateRows(rows, ms, w) {
+  const sm = ms.reduce((s, v) => s + (v > 0 ? v : 0), 0);
+  const sraw = rows.reduce((s, r, i) => s + (ms[i] > 0 ? r.raw : 0), 0);
+  const pre = sraw > 0 ? sm / sraw : 0;      // 候補全体の総量を市場に揃える係数
+  const gs = rows.map((r, i) => (ms[i] > 0 && pre > 0
+    ? Math.pow(r.raw * pre, w) * Math.pow(ms[i], 1 - w) : 0));
+  const sg = gs.reduce((s, v) => s + v, 0);
+  // 候補に入らなかった組は「AIは何も言っていない＝市場と同意見」として分母に加える
+  const total = sg + Math.max(0, 100 - sm);
+  if (!(sg > 0 && sm > 0 && total > 0)) return false;
+  for (let i = 0; i < rows.length; i++) if (ms[i] > 0) rows[i].p = gs[i] / total * 100;
+  return true;
+}
+
+// 校正済みの rows から買い目を選ぶ。opts を省くと本番の設定を使う。
+// 過去データの再計算では opts に別の設定を渡して「もしこうしていたら」を出す
+function pickBuys(rows, opts = {}) {
+  const o = {
+    minEv: EV_MIN_MAIN, minEvAna: EV_MIN_ANA, minP: EV_MIN_P, minOdds: EV_MIN_ODDS,
+    anaMinOdds: ANA_MIN_ODDS, maxMain: MAX_MAIN, maxAna: MAX_ANA, ...opts,
+  };
+  const qual = rows.filter(r => r.ev >= o.minEv && r.p >= o.minP && r.odds >= o.minOdds);
+  // 期待値で絞ったうえで、そのなかで当たりやすい順に本線を採る。
+  // 期待値順で採ると本線が最も人気薄の並びばかりになり、穴との区別がなくなるため
+  const main = qual.slice().sort((a, b) => b.p - a.p).slice(0, o.maxMain);
+  const inMain = new Set(main.map(r => r.combo));
+  const ana = qual.filter(r => !inMain.has(r.combo) && r.odds >= o.anaMinOdds && r.ev >= o.minEvAna)
+    .sort((a, b) => b.ev - a.ev).slice(0, o.maxAna);
+  return { main, ana };
+}
+
 // AIの確率見積もりと実オッズから買い目を決める。
 // pred を書き換えて返す（matoi / ana / main_conf / ana_conf / ev_* を設定）
 function applyEV(pred, odds3t) {
@@ -2339,22 +2373,9 @@ function applyEV(pred, odds3t) {
   // AIは「当たりはこの候補の中にある」を実測より多く見積もる（84%と言って実際は54%）。
   // ここで揃えておけば、以降の判定はAIの確率の『配分』だけで決まる。
   const implied = odds ? marketImplied(odds) : null;
-  let calibrated = false;
-  if (implied) {
-    const ms = rows.map(r => (r.odds > 0 ? implied(r.combo) : null));
-    const sm = ms.reduce((s, v) => s + (v > 0 ? v : 0), 0);
-    const sraw = rows.reduce((s, r, i) => s + (ms[i] > 0 ? r.raw : 0), 0);
-    const pre = sraw > 0 ? sm / sraw : 0;      // 総量を市場に揃える係数
-    const gs = rows.map((r, i) => (ms[i] > 0 && pre > 0
-      ? Math.pow(r.raw * pre, EV_AI_WEIGHT) * Math.pow(ms[i], 1 - EV_AI_WEIGHT) : 0));
-    const sg = gs.reduce((s, v) => s + v, 0);
-    // 候補に入らなかった組は「AIは何も言っていない＝市場と同意見」として分母に加える
-    const total = sg + Math.max(0, 100 - sm);
-    if (sg > 0 && sm > 0 && total > 0) {
-      for (let i = 0; i < rows.length; i++) if (ms[i] > 0) rows[i].p = gs[i] / total * 100;
-      calibrated = true;
-    }
-  }
+  const calibrated = implied
+    ? calibrateRows(rows, rows.map(r => (r.odds > 0 ? implied(r.combo) : null)), EV_AI_WEIGHT)
+    : false;
   pred.ev_weight = calibrated ? EV_AI_WEIGHT : null;
   pred.ev_scheme = calibrated ? CALIB_SCHEME : null;
   for (const r of rows) r.ev = r.odds ? r.p / 100 * r.odds : null;
@@ -2373,13 +2394,7 @@ function applyEV(pred, odds3t) {
   if (usable.length) {
     // 期待値が基準を超えた買い目だけを採用する。
     // そのうち当たりやすい順に本線、残りの高配当 side を穴として足す
-    const qual = usable.filter(r => r.ev >= EV_MIN_MAIN && r.p >= EV_MIN_P && r.odds >= EV_MIN_ODDS);
-    // 期待値で絞ったうえで、そのなかで当たりやすい順に本線を採る。
-    // 期待値順で採ると本線が最も人気薄の並びばかりになり、穴との区別がなくなるため
-    main = qual.slice().sort(byP).slice(0, MAX_MAIN);
-    const inMain = new Set(main.map(r => r.combo));
-    ana = qual.filter(r => !inMain.has(r.combo) && r.odds >= ANA_MIN_ODDS && r.ev >= EV_MIN_ANA)
-              .sort(byEV).slice(0, MAX_ANA);
+    ({ main, ana } = pickBuys(usable));
     pred.ev_mode = 'ev';
   } else {
     // オッズが取れなかった / 確率が信用できないときは期待値を出せない。
@@ -2779,10 +2794,20 @@ async function saveCalibSource(hd, jcd, rno, pred, odds3t, bought) {
   for (const [k, v] of Object.entries(odds3t || {})) if (v > 0) odds[k] = Math.round(v * 10) / 10;
   // w は買い目を選んだときの校正の重み。ev_mode だけでは、校正を入れる前の
   // 「水増しされた確率で6点選んだ ev」と、校正後の ev が同じ ev として混ざり、
-  // 回収率を読み違える（noodds が混ざっていたときと同じ失敗）
+  // 回収率を読み違える（noodds が混ざっていたときと同じ失敗）。
+  //
+  // cd と ovr は「もし設定を変えていたら何を買っていたか」を後から計算するための材料。
+  // 候補ごとの (組・AIの生の確率・オッズ) と、全120組から求めた控除込みの合計があれば、
+  // 別の重みでも別の最低オッズでも買い目を組み直せる。
+  // 全オッズを長期保存すると重いので、逆算に要る ovr だけを数値1つで残す
+  const ovr = Object.values(odds).reduce((s, v) => s + 1 / v, 0);
+  const cd = (pred.ev_detail || [])
+    .filter(d => d && d.c && d.o > 0 && d.pr > 0)
+    .map(d => [d.c, d.pr, d.o]);
   await redisCmd('SET', `calibsrc:${hd}:${jcd}:${rno}`,
     JSON.stringify({ cand, candRaw, odds, bought, mode: pred.ev_mode || null,
-      w: pred.ev_weight ?? null, cs: pred.ev_scheme ?? null }), 'EX', '259200');
+      w: pred.ev_weight ?? null, cs: pred.ev_scheme ?? null,
+      ovr: +ovr.toFixed(4), cd }), 'EX', '1209600');
 }
 
 // 結果が出たレースについて、確率と実際の当たりを突き合わせて記録する。
@@ -2814,6 +2839,8 @@ async function recordCalibration(day, settled) {
       mode: src.mode,
       w: src.w ?? null,                                            // 校正の重み（null=校正前の記録）
       cs: src.cs ?? null,                                          // 校正の方式（null=方式を記録する前）
+      ovr: src.ovr ?? null,                                        // 設定を変えた場合の再計算に使う
+      cd: src.cd ?? null,                                          // 候補ごとの [組, AIの生の確率, オッズ]
       bought,                                                      // 実際に買った組（見送りなら空）
       aiP:  src.cand?.[win] ?? 0,                                  // 校正後に勝った組に付いていた確率
       aiPRaw: src.candRaw?.[win] ?? null,                          // AIの生の見積もりが勝った組に置いた確率
@@ -3027,6 +3054,116 @@ app.get('/api/calibration', async (req, res) => {
         + '確率も違うので、件数が少なくても混ぜない。混ぜると、どちらの成績も読めなくなる。'
         + 'roi は100レースぶん貯まるまで大きくぶれる。'
         + '&detail=1 で1レースずつ、&days=N で直近N日に絞れる',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 「もし設定を変えていたら何を買って、いくら回収していたか」を過去のレースで計算する。
+//
+// 設定を決めるのに新しいデータは要らない。買い目の選び方を変えた結果は、
+// 保存してある候補の確率とオッズから正確に組み直せる。
+// 点数・買ったオッズ・見送り数は誤差なく出る（確定した計算）。
+// 一方で実際の回収率(roi)は的中数が少ないうちは大きくぶれるので、
+// モデルが見込んでいる回収率(expRoi)と並べて返す。
+function replayRows(e, w) {
+  if (!Array.isArray(e.cd) || !e.cd.length || !(e.ovr > 0)) return null;
+  const rows = e.cd
+    .filter(c => Array.isArray(c) && c[2] > 0 && c[1] > 0)
+    .map(([combo, raw, odds]) => ({ combo, raw, p: raw, odds }));
+  if (!rows.length) return null;
+  // 市場の確率はオッズの逆数を控除込みの合計(ovr)で割って求める。
+  // 本番と同じ calibrateRows / pickBuys を通すので、計算がずれる余地が無い
+  const ms = rows.map(r => (1 / r.odds) / e.ovr * 100);
+  if (!calibrateRows(rows, ms, w)) return null;
+  for (const r of rows) r.ev = r.p / 100 * r.odds;
+  return rows;
+}
+
+function replaySummary(entries, w, opts) {
+  let races = 0, bet = 0, points = 0, hit = 0, payout = 0, expHits = 0, sumPO = 0, sumP = 0;
+  for (const e of entries) {
+    const rows = replayRows(e, w);
+    if (!rows) continue;
+    races++;
+    const { main, ana } = pickBuys(rows, opts);
+    const buys = [...main, ...ana];
+    if (!buys.length) continue;
+    bet++; points += buys.length;
+    for (const b of buys) { expHits += b.p / 100; sumPO += b.p * b.odds; sumP += b.p; }
+    if (buys.some(b => b.combo === e.win)) { hit++; payout += e.pay || 0; }
+  }
+  return {
+    races, bet, skipped: races - bet, points, invested: points * 100,
+    // ここまでは誤差なく決まる（どの組をいくらで買うかは計算で出る）
+    expHits: +expHits.toFixed(2),                                   // 計算上の的中数
+    expPayPerHit: sumP ? Math.round(sumPO / sumP * 100) : null,     // 当たったときの配当（計算上）
+    expRoi: points ? Math.round(sumPO / points) : null,             // 計算上の回収率
+    // ここから下は実際に起きたこと。的中数が少ないうちは大きくぶれる
+    hit, payout, roi: points ? Math.round(payout / (points * 100) * 100) : null,
+  };
+}
+
+app.get('/api/replay', async (req, res) => {
+  try {
+    const raw = await redisCmd('LRANGE', 'calib:log', 0, -1);
+    const list = (Array.isArray(raw) ? raw : []).map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
+    const uniq = new Map();
+    for (const e of list) uniq.set(`${e.hd}:${e.jcd}:${e.rno}`, e);
+    let races = [...uniq.values()];
+
+    const nDays = parseInt(req.query.days, 10);
+    if (nDays >= 1 && nDays <= 90) {
+      const keep = new Set([...new Set(races.map(r => r.hd))].sort().slice(-nDays));
+      races = races.filter(r => keep.has(r.hd));
+    }
+
+    // 材料を記録する前のレースは、まだ消えていなければ投稿時の控え(calibsrc)から拾う。
+    // 記録を足した当日に「過去ぶんが1件も無くて何も言えない」とならないようにする
+    const missing = races.filter(r => !Array.isArray(r.cd)).slice(0, 200);
+    let backfilled = 0;
+    if (missing.length) {
+      const got = await Promise.all(missing.map(async r => {
+        try { return JSON.parse(await redisCmd('GET', `calibsrc:${r.hd}:${r.jcd}:${r.rno}`) || 'null'); }
+        catch { return null; }
+      }));
+      missing.forEach((r, i) => {
+        if (got[i]?.cd?.length && got[i].ovr > 0) { r.cd = got[i].cd; r.ovr = got[i].ovr; backfilled++; }
+      });
+    }
+
+    const usable = races.filter(r => Array.isArray(r.cd) && r.cd.length && r.ovr > 0);
+    if (!usable.length) {
+      return res.json({
+        races: races.length, usable: 0,
+        note: '再計算できる記録がまだありません。投稿と結果まとめが1日ぶん動くと貯まります'
+          + '（記録を足す前のレースは、投稿から2週間を過ぎると再計算できません）',
+      });
+    }
+    const days = [...new Set(usable.map(r => r.hd))].sort();
+
+    // 1つだけ試したいときは数値を渡せる。省略時は見比べられるよう一覧で返す
+    const one = ['w', 'minOdds', 'minEv'].some(k => req.query[k] !== undefined);
+    const num = (k, d) => { const v = Number(req.query[k]); return isFinite(v) ? v : d; };
+    const w0 = Math.min(1, Math.max(0, num('w', EV_AI_WEIGHT)));
+    if (one) {
+      const opts = { minOdds: num('minOdds', EV_MIN_ODDS), minEv: num('minEv', EV_MIN_MAIN) };
+      return res.json({ source: { races: usable.length, backfilled, days: days.join(',') },
+        setting: { w: w0, ...opts }, result: replaySummary(usable, w0, opts) });
+    }
+    res.json({
+      source: { races: usable.length, backfilled, from: days[0], to: days[days.length - 1] },
+      current: { w: EV_AI_WEIGHT, minOdds: EV_MIN_ODDS, minEv: EV_MIN_MAIN },
+      // 最低オッズを変えたとき。当たったときの配当を上げたいならここを見る
+      byMinOdds: [1, 30, 50, 70, 100].map(minOdds =>
+        ({ minOdds, ...replaySummary(usable, w0, { minOdds }) })),
+      // AIの見立てをどれだけ信用するかを変えたとき
+      byWeight: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8].map(w =>
+        ({ w, ...replaySummary(usable, w, {}) })),
+      note: 'points・expPayPerHit・expRoi・skipped は計算で確定する（設定を変えた結果そのもの）。'
+        + 'hit と roi は実際に起きたことで、的中数が少ないうちは大きくぶれるので判断に使わない。'
+        + '&w= &minOdds= &minEv= で1つだけ試せる。&days=N で直近N日に絞れる',
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

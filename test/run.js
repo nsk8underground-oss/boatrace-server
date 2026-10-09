@@ -496,6 +496,42 @@ async function main() {
       Array.isArray(row.boughtOdds) && row.boughtOdds.length === row.points
         && row.boughtOdds.every(o => typeof o === 'number' && o > 1),
       JSON.stringify(row.boughtOdds));
+
+    /* ---- 「もし設定を変えていたら」の再計算 ---- */
+    // いちばん大事なのは、いまの設定で再計算した結果が実際の投稿と一致すること。
+    // ここがずれていたら、別の設定で出した数字も信用できない
+    const actual = { bet: det.body.rows.filter(r => r.points > 0).length,
+      points: det.body.rows.reduce((a, r) => a + r.points, 0),
+      hit: det.body.rows.filter(r => r.hit).length,
+      payout: det.body.rows.reduce((a, r) => a + (r.hit ? r.pay : 0), 0) };
+    const now = await getJ('/api/replay?w=0.4&minOdds=1&minEv=1.05');
+    eq('いまの設定で再計算すると実際の投稿と一致する',
+      { bet: now.body.result?.bet, points: now.body.result?.points,
+        hit: now.body.result?.hit, payout: now.body.result?.payout }, actual);
+
+    const sweep = await getJ('/api/replay');
+    const byO = sweep.body.byMinOdds || [];
+    check('最低オッズごとの一覧を返す', byO.length >= 4, JSON.stringify(byO).slice(0, 160));
+    const lo = byO.find(x => x.minOdds === 1), hi = byO.find(x => x.minOdds === 100);
+    check('下限を上げると点数が減る', hi.points <= lo.points, `下限1=${lo.points}点 下限100=${hi.points}点`);
+    check('下限を上げると当たったときの配当が上がる',
+      hi.expPayPerHit == null || hi.expPayPerHit >= lo.expPayPerHit,
+      `下限1=${lo.expPayPerHit}円 下限100=${hi.expPayPerHit}円`);
+    check('重みごとの一覧も返す', (sweep.body.byWeight || []).length >= 4);
+    check('いまの設定を併記する', sweep.body.current?.w === 0.4 && sweep.body.current?.minOdds === 1,
+      JSON.stringify(sweep.body.current));
+    // 計算で確定する数字と、実際に起きたことを混同しないよう両方返す
+    check('計算上の数字と実績を分けて返す',
+      typeof lo.expRoi === 'number' && typeof lo.expHits === 'number' && typeof lo.roi === 'number',
+      JSON.stringify(lo));
+
+    // 材料が無い記録は再計算の対象にしない（勝手に枠なりを作ったのと同じ失敗を避ける）
+    await redis(['RPUSH', 'calib:log', JSON.stringify({
+      hd: '20200103', jcd: '04', rno: 3, win: '1-2-3', pay: 500, mode: 'ev', w: 0.4, cs: 2,
+      bought: ['1-2-3'], points: 1, hit: 1 })]);
+    const withBad = await getJ('/api/replay?w=0.4&minOdds=1');
+    eq('材料の無い記録は数えない', withBad.body.result?.bet, now.body.result?.bet);
+    await redis(['RPOP', 'calib:log']);
     await redis(['RPOP', 'calib:log']);   // 積んだ校正前の記録を外して元に戻す
     // 2度集計しても二重に記録しない
     await redis(['DEL', `xresult:${hd}`]);
