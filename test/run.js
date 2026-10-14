@@ -322,6 +322,19 @@ async function main() {
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
     check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v11_04_${hd}_12_0_ex1`])));
 
+    // 展示情報のデバッグ窓口。中身の無いページを見ているのか、解析が壊れているのかを
+    // 見分けられること（同じ見た目の短いページが返るので、何度も原因を取り違えた）
+    await seed({ hasExhibit: false });
+    const dbEmpty = await getJ(`/api/debug-before?jcd=04&hd=${hd}&rno=1`);
+    check('展示が無いページでは中身が無いと伝える',
+      /中身がありません/.test(dbEmpty.body.hint || ''), JSON.stringify(dbEmpty.body).slice(0, 200));
+    check('どのURLを見たのかを返す', /beforeinfo\?jcd=04/.test(dbEmpty.body.url || ''), dbEmpty.body.url);
+    await seed({ hasExhibit: true });
+    const dbOk = await getJ(`/api/debug-before?jcd=04&hd=${hd}&rno=1`);
+    check('展示があるときは注意書きを出さない', !dbOk.body.hint, JSON.stringify(dbOk.body.hint));
+    check('展示があれば6艇ぶん読める', Object.keys(dbOk.body.parsed?.exhibit || {}).length === 6,
+      JSON.stringify(dbOk.body.parsed?.exhibit).slice(0, 160));
+
     // ダッシュボードの「共有予想あり」。ここも v6 を直に書いていたため、サーバーが
     // v7 に上げた時点から常に false になっていた（アプリ側の同じ取り残しは #59 で修正済み）
     const dash = await getJ('/api/dashboard');

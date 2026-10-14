@@ -1471,11 +1471,13 @@ app.get('/api/list-models', async (req, res) => {
 
 app.get('/api/debug-before', async (req, res) => {
   const { jcd = '04', hd, rno = '1' } = req.query;
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const date = hd || today;
+  // 既定の日付はJSTで決める。UTCだと朝9時までは前日を見ることになり、
+  // 「中身の無いページ」が返ってきて原因を取り違える
+  const date = hd || todayHd();
   try {
-    const html = await fetchHtml(`${BASE}/beforeinfo?jcd=${jcd}&hd=${date}&rno=${rno}`);
-    if (!html) return res.json({ error: 'HTML取得失敗' });
+    const url = `${BASE}/beforeinfo?jcd=${jcd}&hd=${date}&rno=${rno}`;
+    const html = await fetchHtml(url);
+    if (!html) return res.json({ error: 'HTML取得失敗', url });
     const $ = cheerio.load(html);
     const rows = [];
     $('tr').each((_, tr) => {
@@ -1487,7 +1489,21 @@ app.get('/api/debug-before', async (req, res) => {
       }
     });
     const parsed = parseBeforeinfo(html);
-    res.json({ rows, parsed, htmlLen: html.length });
+    // 何も読めなかったとき、解析の不具合なのか「中身の無いページ」なのかを
+    // 見分けられるようにする。boatrace.jp は開催していない日やまだ展示が
+    // 出ていないレースでも、同じ見た目の短いページを返す
+    const empty = !rows.length && !Object.keys(parsed.exhibit).length;
+    res.json({
+      url, hd: date, jcd, rno,
+      rows, parsed, htmlLen: html.length,
+      title: ((html.match(/<title>([^<]*)<\/title>/) || [])[1] || '').trim().slice(0, 80),
+      hint: empty
+        ? (html.length < 20000
+            ? 'ページに中身がありません（その日その場が開催していない／レース番号が無い／まだ展示が出ていない）。'
+              + '/api/dashboard で status:open の場と nextRno を確認して取り直してください'
+            : 'ページには中身がありますが解析できていません。boatrace.jp の作りが変わった可能性があります')
+        : undefined,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
