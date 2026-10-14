@@ -322,6 +322,14 @@ async function main() {
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
     check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v11_04_${hd}_12_0_ex1`])));
 
+    // ダッシュボードの「共有予想あり」。ここも v6 を直に書いていたため、サーバーが
+    // v7 に上げた時点から常に false になっていた（アプリ側の同じ取り残しは #59 で修正済み）
+    const dash = await getJ('/api/dashboard');
+    const hira = (dash.body.venues || []).find(v => v.jcd === '04');
+    check('ダッシュボードが開催場を返す', !!hira, JSON.stringify(dash.body).slice(0, 200));
+    check('予想があれば共有予想ありと出る', hira?.shared === true,
+      `shared=${hira?.shared} nextRno=${hira?.nextRno}（予想を作ったのは12R）`);
+
     // 共有予想の窓口。アプリがキー文字列を自分で組み立てていた頃は、サーバーが
     // 版を上げるとアプリだけ古い版(v6)を探し続け、共有予想が永久に見つからなかった。
     // キーの組み立てをサーバーに寄せたので、同じ材料を渡せば必ず見つかる

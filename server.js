@@ -857,10 +857,13 @@ app.get('/api/dashboard', async (req, res) => {
       }
       if (!next) return { jcd, name, status: 'ended' };
 
-      // そのレースの共有予想があるか（展示反映後ex1を優先して確認）
+      // そのレースの共有予想があるか（展示反映後を優先して確認）。
+      // キーは predictCacheKey に組ませる。ここだけ v6 を直に書いていたため、
+      // サーバーが v7 に上げた時点から shared は常に false になっていた
+      // （アプリ側で同じ取り残しを #59 で直したが、ここが残っていた）
       let shared = false;
-      for (const ex of ['ex1', 'ex0']) {
-        if (await lookupSharedPredict(`v6_${jcd}_${hd}_${next.rno}_0_${ex}`)) { shared = true; break; }
+      for (const hasEx of [true, false]) {
+        if (await lookupSharedPredict(predictCacheKey(jcd, hd, next.rno, 0, hasEx))) { shared = true; break; }
       }
       const [h, m] = next.time.split(':').map(Number);
       return { jcd, name, status: 'open', nextRno: next.rno, nextTime: next.time, minsLeft: h * 60 + m - nowMin, shared };
