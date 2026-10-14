@@ -3186,12 +3186,14 @@ app.get('/api/replay', async (req, res) => {
     const days = [...new Set(usable.map(r => r.hd))].sort();
 
     // 1つだけ試したいときは数値を渡せる。省略時は見比べられるよう一覧で返す
-    const one = ['w', 'minOdds', 'maxOdds', 'minEv'].some(k => req.query[k] !== undefined);
+    const one = ['w', 'minOdds', 'maxOdds', 'minEv', 'maxMain', 'maxAna'].some(k => req.query[k] !== undefined);
     const num = (k, d) => { const v = Number(req.query[k]); return isFinite(v) ? v : d; };
     const w0 = Math.min(1, Math.max(0, num('w', EV_AI_WEIGHT)));
     if (one) {
       const opts = { minOdds: num('minOdds', EV_MIN_ODDS), maxOdds: num('maxOdds', EV_MAX_ODDS),
-        minEv: num('minEv', EV_MIN_MAIN) };
+        minEv: num('minEv', EV_MIN_MAIN),
+        maxMain: Math.min(12, Math.max(0, num('maxMain', MAX_MAIN))),
+        maxAna: Math.min(12, Math.max(0, num('maxAna', MAX_ANA))) };
       return res.json({ source: { races: usable.length, backfilled, days: days.join(',') },
         setting: { w: w0, ...opts }, result: replaySummary(usable, w0, opts) });
     }
@@ -3206,6 +3208,11 @@ app.get('/api/replay', async (req, res) => {
       // 「どこまで踏み込むか」は下限と同じくらい重要
       byMaxOdds: [30, 50, 100, 200, 500].map(maxOdds =>
         ({ maxOdds, ...replaySummary(usable, w0, { maxOdds }) })),
+      // 「深い人気薄まで買うなら、取り漏らさないよう点数も広げないと釣り合わない」かを見る。
+      // いまは点数が最大6点のまま上限なしで買っており、少点数と深い人気薄という
+      // いちばん噛み合わない組み合わせになっている可能性がある
+      byPoints: [[4, 2], [6, 3], [8, 4], [12, 6]].map(([maxMain, maxAna]) =>
+        ({ maxPoints: maxMain + maxAna, ...replaySummary(usable, w0, { maxMain, maxAna }) })),
       // AIの見立てをどれだけ信用するかを変えたとき。
       // expRoi はAIの確率から計算するので、wを上げれば必ず上がる。
       // モデルが自分の答案を自分で採点した数字なので、wを選ぶ根拠には使えない
@@ -3213,7 +3220,8 @@ app.get('/api/replay', async (req, res) => {
         ({ w, ...replaySummary(usable, w, {}) })),
       note: 'points・expPayPerHit・expRoi・skipped は計算で確定する（設定を変えた結果そのもの）。'
         + 'hit と roi は実際に起きたことで、的中数が少ないうちは大きくぶれるので判断に使わない。'
-        + '&w= &minOdds= &minEv= で1つだけ試せる。&days=N で直近N日に絞れる',
+        + '&w= &minOdds= &maxOdds= &minEv= &maxMain= &maxAna= で1つだけ試せる。'
+        + '&days=N で直近N日に絞れる',
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

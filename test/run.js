@@ -562,6 +562,17 @@ async function main() {
       tight.expPayPerHit == null || loose.expPayPerHit == null || tight.expPayPerHit <= loose.expPayPerHit,
       `上限30=${tight.expPayPerHit}円 上限500=${loose.expPayPerHit}円`);
     eq('最高オッズの設定も返す（既定は上限なし）', sweep.body.current?.maxOdds, null);
+    // 「深く買うなら点数も広げないと釣り合わない」かを実データで試せること
+    const byPts = sweep.body.byPoints || [];
+    check('点数ごとの一覧も返す', byPts.length >= 3, JSON.stringify(byPts).slice(0, 160));
+    const narrow = byPts.find(x => x.maxPoints === 6), wide6 = byPts.find(x => x.maxPoints === 18);
+    check('点数を広げると買う点数が増える', wide6.points >= narrow.points,
+      `6点まで=${narrow.points} 18点まで=${wide6.points}`);
+    check('点数を広げると計算上の的中も増える', wide6.expHits >= narrow.expHits,
+      `6点まで=${narrow.expHits} 18点まで=${wide6.expHits}`);
+    const manyPts = await getJ('/api/replay?w=0.4&maxMain=8&maxAna=4');
+    check('点数を指定して試せる', manyPts.body.result?.points >= now.body.result.points,
+      `指定=${manyPts.body.result?.points} 既定=${now.body.result.points}`);
     // 上限と下限を同時に指定すると、その帯だけを買う
     const band = await getJ('/api/replay?w=0.4&minOdds=30&maxOdds=80');
     check('帯で絞れる', typeof band.body.result?.points === 'number'
