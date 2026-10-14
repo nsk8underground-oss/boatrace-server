@@ -518,7 +518,7 @@ input,select{font-family:var(--sans);}
 <script>
 /* ======================== CONFIG ======================== */
 const SERVER_URL = ''; // 本番: 空文字（相対URL）/ ローカル: 'http://localhost:3000'
-const APP_VERSION = 'v3.41';
+const APP_VERSION = 'v3.42';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION;
   renderNickChip();
@@ -1868,13 +1868,31 @@ async function runPredict(auto = false) {
     const evBadge = ev => (typeof ev === 'number' && ev > 0)
       ? `<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--gold);margin-left:6px">期待値${ev.toFixed(2)}</span>` : '';
 
-    // 展開予想: 本線展開と穴展開を対比表示（旧形式キャッシュはtenkaiにフォールバック）
-    const tMain = r.tenkai_main || '';
-    const tAna  = r.tenkai_ana  || '';
+    // 展開予想: 買い目に合う展開を出す。
+    // 買い目は期待値（AIの見立てと市場の食い違い）で選ぶので、AIが「最有力」と思う展開とは
+    // 別の艇になることが多い。tenkai_main をそのまま出すと、6号艇から買っているのに
+    // 「1号艇が逃げ切る展開」と書かれた状態になる（実際にその投稿が出た）
+    const tenkaiMap = (r.tenkai && typeof r.tenkai === 'object') ? r.tenkai : null;
+    const firstOf = list => {
+      const fs = (list || []).map(c => String(c).split('-')[0]).filter(x => /^[1-6]$/.test(x));
+      if (!fs.length) return null;
+      const n = {}; fs.forEach(f => n[f] = (n[f] || 0) + 1);
+      return Object.keys(n).sort((a, b) => n[b] - n[a] || +a - +b)[0];
+    };
+    const tenkaiFor = (list, fallback) => {
+      const top = firstOf(list);
+      if (top && tenkaiMap && tenkaiMap[top]) return String(tenkaiMap[top]);
+      // 買い目の1着に触れていない文章は出さない（別のレースの話に見える）
+      if (!top) return fallback || '';
+      return (fallback || '').includes(top + '号艇') ? fallback : '';
+    };
+    const tMain = tenkaiFor(r.matoi, r.tenkai_main || '');
+    const tAnaRaw = tenkaiFor(r.ana, r.tenkai_ana || '');
+    const tAna  = (tAnaRaw && tAnaRaw !== tMain) ? tAnaRaw : '';
     const mEl = document.getElementById('tenkaiMain');
     const aEl = document.getElementById('tenkaiAna');
     const tEl = document.getElementById('tenkaiText');
-    if (tMain || tAna || r.tenkai) {
+    if (tMain || tAna || typeof r.tenkai === 'string') {
       document.getElementById('tenkaiBox').style.display = 'block';
       mEl.style.display = tMain ? 'block' : 'none';
       aEl.style.display = tAna  ? 'block' : 'none';
@@ -1886,8 +1904,10 @@ async function runPredict(auto = false) {
         document.getElementById('tenkaiAnaText').textContent = tAna;
         document.getElementById('tenkaiAnaConf').innerHTML = confBadge(anaConf, 'var(--gold)');
       }
-      tEl.style.display = (!tMain && !tAna && r.tenkai) ? 'block' : 'none';
-      if (!tMain && !tAna && r.tenkai) tEl.textContent = r.tenkai;
+      // 旧形式のキャッシュは tenkai が文字列。いまは艇ごとの連想配列なので、文字列のときだけ出す
+      const legacy = (typeof r.tenkai === 'string') ? r.tenkai : '';
+      tEl.style.display = (!tMain && !tAna && legacy) ? 'block' : 'none';
+      if (!tMain && !tAna && legacy) tEl.textContent = legacy;
     }
     document.getElementById('matoiConfBadge').innerHTML = (mainConf ? confBadge(mainConf, 'var(--accent2)') : '') + evBadge(r.ev_main);
     document.getElementById('anaConfBadge').innerHTML   = (anaConf  ? confBadge(anaConf,  'var(--gold)')    : '') + evBadge(r.ev_ana);

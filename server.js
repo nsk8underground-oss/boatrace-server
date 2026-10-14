@@ -2197,6 +2197,7 @@ const EV_PROMPT_RULES = `【重要・予想の方針】
 以下のJSON形式のみで回答（バッククォート不要）:
 {
   "analysis": "280文字以内の総合分析",
+  "tenkai": {"1": "1号艇が1着になる展開110文字以内", "4": "4号艇が1着になる展開110文字以内"},
   "tenkai_main": "最有力の展開シナリオ130文字以内。どの艇がどう決まるのが本線か具体的に",
   "tenkai_ana": "波乱の展開シナリオ130文字以内。何が起きれば高配当になるか具体的に",
   "wind_effect": "90文字以内",
@@ -2210,6 +2211,10 @@ const EV_PROMPT_RULES = `【重要・予想の方針】
 「Nコース」という書き方はしないこと。進入が変わったレースで号艇とコース番号を取り違え、
 「6コースから逃げ」のような成立しない文章を書く事故を防ぐためです。
 決まり手は上の定義どおりに使ってください（1コース以外の艇に「逃げ」はありません）。
+tenkai は「1着になりうる艇」ごとの展開を2〜4艇ぶん書いてください（キーは艇番）。
+買い目はこのあとサーバーが期待値で選ぶため、最有力の艇が買い目に入るとは限りません。
+どの艇が選ばれても文章を添えられるよう、有力な艇だけでなく、起こりうる艇のぶんも書いてください。
+candsで確率を付けた組の1着艇は、できるだけ tenkai にも入れてください。
 candsは3連単の候補を18〜24組。cは "艇番-艇番-艇番" 形式、pは的中確率(%)の見積もり（小数可）。
 3連単の各組は同時に起こらないので、pの合計は100を超えないこと。
 p が 1 未満になるほど薄い組は入れないこと。同じ組を重複させないこと。
@@ -2443,7 +2448,9 @@ function applyEV(pred, odds3t) {
 //       見送りが構造的に起きなかったため使わない
 //   v10: 進入（スタート展示のコース）をプロンプトの主役に据えた。v9 以前の予想は
 //        号艇順の出走表から作られていて、進入が変わったレースで枠なり前提になっている
-const PREDICT_CACHE_VERSION = 'v10';
+//   v11: 1着艇ごとの展開(tenkai)を持たせた。v10 以前には買い目に合う文章が無く、
+//        6号艇から買いながら「1号艇が逃げ切る展開」と書く投稿が出ていた
+const PREDICT_CACHE_VERSION = 'v11';
 const predictCacheKey = (jcd, hd, rno, fixedFirst, hasEx) =>
   `${PREDICT_CACHE_VERSION}_${jcd}_${hd}_${rno}_${fixedFirst || 0}_ex${hasEx ? 1 : 0}`;
 
@@ -2653,6 +2660,28 @@ function compressTrifecta(combos) {
   return out;
 }
 
+// 実際に載せた買い目に合う展開の文章を返す。
+//
+// 買い目は期待値（AIの見立てと市場の食い違い）で選ぶので、AIが「最有力」と思う展開とは
+// 別の艇になることが多い。それでも tenkai_main をそのまま添えていたため、
+// 「6-1-2 6-1-3 6-2-1」を買いながら「1号艇が逃げ切る展開」と書く投稿が出ていた。
+// 買い目の1着艇に合う文章が無いときは、矛盾した文章を載せるより何も載せないほうがよい
+function tenkaiFor(pred, bought) {
+  const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const map = pred.tenkai && typeof pred.tenkai === 'object' ? pred.tenkai : null;
+  const firsts = (bought || []).map(c => String(c).split('-')[0]).filter(x => /^[1-6]$/.test(x));
+  if (!firsts.length) return clean(pred.tenkai_main);   // 見送りのときはAIの見立てをそのまま
+  // 買い目の1着が複数艇にまたがるときは、点数の多い艇の展開を採る
+  const count = {};
+  for (const f of firsts) count[f] = (count[f] || 0) + 1;
+  const top = Object.keys(count).sort((a, b) => count[b] - count[a] || +a - +b)[0];
+  if (map && clean(map[top])) return clean(map[top]);
+  // 旧形式のキャッシュには艇ごとの展開が無い。その場合でも、買い目の1着に触れていない
+  // 文章は載せない（別のレースの話に見える）
+  const main = clean(pred.tenkai_main);
+  return main.includes(`${top}号艇`) ? main : '';
+}
+
 // レース予想のツイート本文。
 // 返り値の matoi / ana は「実際に本文へ載せた買い目」で、結果まとめの的中判定は
 // これを使う。投稿していない買い目で的中と書いてしまうのを防ぐため
@@ -2712,7 +2741,7 @@ function buildRaceTweet(venue, rno, closeTime, pred) {
     head = render(nm, na);
   }
 
-  let tenkai = String(pred.tenkai_main || '').replace(/\s+/g, ' ').trim();
+  let tenkai = tenkaiFor(pred, [...allM.slice(0, nm), ...allA.slice(0, na)]);
   const room = 280 - xLen(head) - xLen(tail) - 2;
   const text = (room > 20 && tenkai)
     ? head + '\n' + (() => { while (tenkai && xLen(tenkai) > room) tenkai = tenkai.slice(0, -1); return tenkai; })() + tail

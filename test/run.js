@@ -86,7 +86,7 @@ async function main() {
     const del = [`xlog:${hd}`, `xlogl:${hd}`, `xcount:${hd}`, `xskip:${hd}`, `xresult:${hd}`, `calibdone:${hd}`, 'xhold'];
     for (let r = 1; r <= 12; r++) {
       del.push(`xposted:${hd}:04:${r}`, `calibsrc:${hd}:04:${r}`);
-      del.push(`predict:v10_04_${hd}_${r}_0_ex1`, `predict:v10_04_${hd}_${r}_0_ex0`);
+      del.push(`predict:v11_04_${hd}_${r}_0_ex1`, `predict:v11_04_${hd}_${r}_0_ex0`);
     }
     del.push(`tide:TK:${hd}`);
     await seed({
@@ -264,10 +264,43 @@ async function main() {
     await seed({ shinnyu: [1, 2, 3, 4, 5, 6] });
 
     /* ============================================================ */
+    console.log('\n【2.8】展開の文章は買い目と同じ艇の話であること');
+    // 実際に出た投稿: 買い目は 6-1-2 / 6-1-3 / 6-2-1（全部1着が6号艇）なのに、
+    // 添えた文章は「1号艇がインから好スタート…そのまま逃げ切る展開」だった。
+    // 買い目は期待値（市場との食い違い）で選ぶので、AIが最有力と思う展開とは別の艇になる
+    const tw2 = require('../server.js')._internals.buildRaceTweet;
+    const bad = { matoi: ['6-1-2', '6-1-3', '6-2-1'], ana: [], main_conf: 2.2, ev_main: 3.09,
+      tenkai_main: '1号艇白井がインから好スタートを決め、そのまま逃げ切る展開。',
+      tenkai: { '6': '6号艇が大外から一気にまくり、1号艇は差し遅れる展開。',
+                '1': '1号艇白井がインから好スタートを決め、そのまま逃げ切る展開。' } };
+    const t1 = tw2('平和島', 10, '15:04', bad).text;
+    check('買い目の1着に合う展開を載せる', t1.includes('6号艇が大外から'), t1);
+    check('買い目と違う艇の展開は載せない', !t1.includes('1号艇白井がインから'), t1);
+
+    // 艇ごとの展開が無い古い予想でも、矛盾した文章は載せない
+    const oldPred = { ...bad, tenkai: undefined };
+    const t2 = tw2('平和島', 10, '15:04', oldPred).text;
+    check('艇ごとの展開が無ければ何も載せない', !t2.includes('1号艇白井がインから'), t2);
+    // 買い目の艇に触れている文章なら、古い形式でもそのまま使える
+    const okLegacy = { ...bad, tenkai: undefined, tenkai_main: '6号艇がまくり切る展開。' };
+    check('買い目の艇に触れていれば古い形式でも載せる',
+      tw2('平和島', 10, '15:04', okLegacy).text.includes('6号艇がまくり切る展開'), '');
+
+    // 買い目が複数の艇にまたがるときは、点数の多い艇の展開を採る
+    const mixedFirst = { ...bad, matoi: ['6-1-2', '6-1-3', '1-2-3'] };
+    check('1着が混ざれば点数の多い艇を採る',
+      tw2('平和島', 10, '15:04', mixedFirst).text.includes('6号艇が大外から'), '');
+
+    // 見送りのレースは買い目が無いので、AIの見立てをそのまま載せてよい
+    const noBuy = { matoi: [], ana: [], ev_skip: true, main_conf: 0,
+      tenkai_main: '1号艇が堅い。', tenkai: { '1': '1号艇が堅い。' } };
+    check('見送りならAIの見立てを載せる', tw2('平和島', 10, '15:04', noBuy).text.includes('1号艇が堅い'), '');
+
+    /* ============================================================ */
     console.log('\n【3】/api/predict はアプリの文面を受け付けない');
-    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v10_04_${hd}_12_0_ex1` });
+    const legacy = await postJ('/api/predict', { prompt: '好きな文章', cacheKey: `v11_04_${hd}_12_0_ex1` });
     check('旧形式（prompt指定）は400で拒否される', legacy.status === 400, `status=${legacy.status} ${JSON.stringify(legacy.body)}`);
-    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v10_04_${hd}_12_0_ex1`]), null);
+    eq('拒否しても共有キャッシュは書き換わらない', await redis(['GET', `predict:v11_04_${hd}_12_0_ex1`]), null);
     for (const [label, body] of [
       ['会場コードが不正', { jcd: '99', hd, rno: 1 }],
       ['日付が不正', { jcd: '04', hd: 'x', rno: 1 }],
@@ -287,14 +320,14 @@ async function main() {
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
     check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm/.test(st3.lastPrompt),
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
-    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v10_04_${hd}_12_0_ex1`])));
+    check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v11_04_${hd}_12_0_ex1`])));
 
     // 共有予想の窓口。アプリがキー文字列を自分で組み立てていた頃は、サーバーが
     // 版を上げるとアプリだけ古い版(v6)を探し続け、共有予想が永久に見つからなかった。
     // キーの組み立てをサーバーに寄せたので、同じ材料を渡せば必ず見つかる
     const sh = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=12&fixedFirst=0&ex=1`);
     check('アプリと同じ材料で共有予想が見つかる', sh.body.found === true, JSON.stringify(sh.body).slice(0, 160));
-    check('どのキーで探したかも返す', sh.body.key === `v10_04_${hd}_12_0_ex1`, sh.body.key);
+    check('どのキーで探したかも返す', sh.body.key === `v11_04_${hd}_12_0_ex1`, sh.body.key);
     const shNo = await getJ(`/api/predict-shared?jcd=04&hd=${hd}&rno=11&fixedFirst=0&ex=1`);
     check('無いレースは found=false', shNo.body.found === false, JSON.stringify(shNo.body).slice(0, 120));
     check('材料が不正なら400', (await getJ(`/api/predict-shared?jcd=99&hd=${hd}&rno=12`)).status === 400);
