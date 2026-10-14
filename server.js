@@ -2173,6 +2173,16 @@ const EV_MIN_ODDS = (() => {
   const v = Number(process.env.EV_MIN_ODDS);
   return isFinite(v) && v >= 1 && v <= 500 ? v : 1;
 })();
+// 買う組の最高オッズ。既定は上限なしで、いままでと同じ動き。
+//
+// 深い人気薄は、確率の見積もりの誤差がいちばん大きいところ。32レースの実測では
+// 50倍以上の組だけを買う設定にしていたら、計算上1.4回の的中に対して実績0回だった。
+// 「市場の10倍ある」と見積もった420倍の組を買う（期待値3.09）のは、
+// 見立てというより誤差の可能性が高い。踏み込む深さを決められるようにしておく
+const EV_MAX_ODDS = (() => {
+  const v = Number(process.env.EV_MAX_ODDS);
+  return isFinite(v) && v >= 2 ? v : Infinity;
+})();
 // 校正のやり方を変えたら上げる。方式が違う記録を混ぜると、回収率も校正バケットも
 // 読めなくなる（noodds を混ぜて読み違えた失敗を、同じ ev の中でまた繰り返さないため）。
 //   1: 候補の合計を市場の合計に合わせる方式。基準が候補内の相対になり見送りが出なかった
@@ -2313,10 +2323,12 @@ function calibrateRows(rows, ms, w) {
 // 過去データの再計算では opts に別の設定を渡して「もしこうしていたら」を出す
 function pickBuys(rows, opts = {}) {
   const o = {
-    minEv: EV_MIN_MAIN, minEvAna: EV_MIN_ANA, minP: EV_MIN_P, minOdds: EV_MIN_ODDS,
+    minEv: EV_MIN_MAIN, minEvAna: EV_MIN_ANA, minP: EV_MIN_P,
+    minOdds: EV_MIN_ODDS, maxOdds: EV_MAX_ODDS,
     anaMinOdds: ANA_MIN_ODDS, maxMain: MAX_MAIN, maxAna: MAX_ANA, ...opts,
   };
-  const qual = rows.filter(r => r.ev >= o.minEv && r.p >= o.minP && r.odds >= o.minOdds);
+  const qual = rows.filter(r => r.ev >= o.minEv && r.p >= o.minP
+    && r.odds >= o.minOdds && r.odds <= o.maxOdds);
   // 期待値で絞ったうえで、そのなかで当たりやすい順に本線を採る。
   // 期待値順で採ると本線が最も人気薄の並びばかりになり、穴との区別がなくなるため
   const main = qual.slice().sort((a, b) => b.p - a.p).slice(0, o.maxMain);
@@ -2911,6 +2923,7 @@ app.get('/api/calibration', async (req, res) => {
       anaMinOdds: ANA_MIN_ODDS,     // これ以上を穴として扱う
       evMinP: EV_MIN_P,             // 校正後の確率がこれ未満の組は買わない
       evMinOdds: EV_MIN_ODDS,       // これ未満のオッズの組は買わない（1=制限なし）
+      evMaxOdds: EV_MAX_ODDS === Infinity ? null : EV_MAX_ODDS,  // これを超える組は買わない（null=上限なし）
       maxPoints: MAX_MAIN + MAX_ANA,// 1レースの最大点数
     };
     if (!races.length) return res.json({ config, races: 0, note: '記録がまだありません。投稿と結果まとめが1日ぶん動くと貯まります' });
@@ -3173,21 +3186,29 @@ app.get('/api/replay', async (req, res) => {
     const days = [...new Set(usable.map(r => r.hd))].sort();
 
     // 1つだけ試したいときは数値を渡せる。省略時は見比べられるよう一覧で返す
-    const one = ['w', 'minOdds', 'minEv'].some(k => req.query[k] !== undefined);
+    const one = ['w', 'minOdds', 'maxOdds', 'minEv'].some(k => req.query[k] !== undefined);
     const num = (k, d) => { const v = Number(req.query[k]); return isFinite(v) ? v : d; };
     const w0 = Math.min(1, Math.max(0, num('w', EV_AI_WEIGHT)));
     if (one) {
-      const opts = { minOdds: num('minOdds', EV_MIN_ODDS), minEv: num('minEv', EV_MIN_MAIN) };
+      const opts = { minOdds: num('minOdds', EV_MIN_ODDS), maxOdds: num('maxOdds', EV_MAX_ODDS),
+        minEv: num('minEv', EV_MIN_MAIN) };
       return res.json({ source: { races: usable.length, backfilled, days: days.join(',') },
         setting: { w: w0, ...opts }, result: replaySummary(usable, w0, opts) });
     }
     res.json({
       source: { races: usable.length, backfilled, from: days[0], to: days[days.length - 1] },
-      current: { w: EV_AI_WEIGHT, minOdds: EV_MIN_ODDS, minEv: EV_MIN_MAIN },
+      current: { w: EV_AI_WEIGHT, minOdds: EV_MIN_ODDS,
+        maxOdds: EV_MAX_ODDS === Infinity ? null : EV_MAX_ODDS, minEv: EV_MIN_MAIN },
       // 最低オッズを変えたとき。当たったときの配当を上げたいならここを見る
       byMinOdds: [1, 30, 50, 70, 100].map(minOdds =>
         ({ minOdds, ...replaySummary(usable, w0, { minOdds }) })),
-      // AIの見立てをどれだけ信用するかを変えたとき
+      // 高いほうを切ったとき。深い人気薄は見積もりの誤差がいちばん大きい領域なので、
+      // 「どこまで踏み込むか」は下限と同じくらい重要
+      byMaxOdds: [30, 50, 100, 200, 500].map(maxOdds =>
+        ({ maxOdds, ...replaySummary(usable, w0, { maxOdds }) })),
+      // AIの見立てをどれだけ信用するかを変えたとき。
+      // expRoi はAIの確率から計算するので、wを上げれば必ず上がる。
+      // モデルが自分の答案を自分で採点した数字なので、wを選ぶ根拠には使えない
       byWeight: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8].map(w =>
         ({ w, ...replaySummary(usable, w, {}) })),
       note: 'points・expPayPerHit・expRoi・skipped は計算で確定する（設定を変えた結果そのもの）。'
