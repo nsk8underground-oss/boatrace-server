@@ -322,6 +322,24 @@ async function main() {
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
     check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v11_04_${hd}_12_0_ex1`])));
 
+    // URLを2本まとめて貼ると、同じ名前のパラメータが2回届いて配列になる。
+    // そのまま外部サイトのURLに埋めると壊れたURLを投げ、返ってきたシステムエラーの
+    // ページを見て「開催していない日なのか」と原因を取り違える
+    const dbl = await getJ(`/api/debug-before?jcd=04&hd=${hd}&hd=${hd}&rno=5&rno=9`);
+    check('同じ指定が2回来たら400で止める', dbl.status === 400, JSON.stringify(dbl.body).slice(0, 200));
+    for (const [label, qs] of [
+      ['場コードが不正', 'jcd=99&rno=1'],
+      ['日付が不正', `jcd=04&hd=2026-10-14&rno=1`],
+      ['レース番号が不正', `jcd=04&hd=${hd}&rno=5https://example.com`],
+    ]) {
+      const r = await getJ(`/api/debug-before?${qs}`);
+      check(`${label}なら400`, r.status === 400, `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
+    }
+    check('結果のデバッグ窓口も同じく止める',
+      (await getJ(`/api/debug-result?jcd=04&hd=${hd}&hd=${hd}&rno=1`)).status === 400);
+    check('出走表のデバッグ窓口も同じく止める',
+      (await getJ(`/api/debug?jcd=04&hd=${hd}&rno=99`)).status === 400);
+
     // 展示情報のデバッグ窓口。中身の無いページを見ているのか、解析が壊れているのかを
     // 見分けられること（同じ見た目の短いページが返るので、何度も原因を取り違えた）
     await seed({ hasExhibit: false });

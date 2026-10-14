@@ -785,6 +785,27 @@ app.get('/api/today', async (req, res) => {
 // 診断: 開催場の検出がどの段階で失敗しているかを確認する
 // 診断: boatrace.jp の各URLに対する到達性を並列で確認する。
 // ステータス・所要時間・エラー内容まで返すので、404なのか遅延なのかを切り分けられる
+// デバッグ窓口の入力をそろえる。
+// 同じ名前のパラメータが2回来ると Express は配列を渡す（URLを2本まとめて貼ると起きる）。
+// それをそのまま外部サイトのURLに埋めると「hd=20261014,20261014」のような
+// 壊れたURLを投げることになり、返ってきたシステムエラーのページを見て
+// 「開催していない日なのか」と原因を取り違える
+function raceParams(req, def = {}) {
+  // 同じ名前が2回来るのは、URLを2本まとめて貼ったときの決まった症状。
+  // 先頭を黙って採用するより、その場で指摘したほうが早く解決する
+  const dup = ['jcd', 'hd', 'rno'].filter(k => Array.isArray(req.query[k]));
+  if (dup.length) {
+    return { error: `${dup.join('・')}が2回指定されています。URLを2本まとめて貼っていませんか` };
+  }
+  const jcd = String(req.query.jcd ?? def.jcd ?? '');
+  const hd  = String(req.query.hd ?? def.hd ?? todayHd());
+  const rno = String(req.query.rno ?? def.rno ?? '1');
+  if (!/^\d{2}$/.test(jcd) || !VENUES[jcd]) return { error: `場コードが不正です: ${jcd.slice(0, 20)}` };
+  if (!/^\d{8}$/.test(hd)) return { error: `日付が不正です（YYYYMMDD）: ${hd.slice(0, 20)}` };
+  if (!/^([1-9]|1[0-2])$/.test(rno)) return { error: `レース番号が不正です（1〜12）: ${rno.slice(0, 40)}` };
+  return { jcd, hd, rno };
+}
+
 app.get('/api/debug-fetch', async (req, res) => {
   const hd = req.query.hd || todayHd();
   const ms = Math.min(parseInt(req.query.ms) || 15000, 20000);
@@ -1406,10 +1427,13 @@ app.get('/api/ping-boatrace', async (req, res) => {
 });
 
 app.get('/api/debug', async (req, res) => {
-  const { jcd = '21', hd = '20260519', rno = '1' } = req.query;
+  const q = raceParams(req, { jcd: '21' });
+  if (q.error) return res.status(400).json({ error: q.error, hint: 'URLを1本ずつ開いてください' });
+  const { jcd, hd, rno } = q;
   try {
-    const html = await fetchHtml(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=${rno}`);
-    if (!html) return res.json({ error: 'HTMLが取得できませんでした' });
+    const url = `${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=${rno}`;
+    const html = await fetchHtml(url);
+    if (!html) return res.json({ error: 'HTMLが取得できませんでした', url });
 
     const $ = cheerio.load(html);
 
@@ -1470,10 +1494,11 @@ app.get('/api/list-models', async (req, res) => {
 });
 
 app.get('/api/debug-before', async (req, res) => {
-  const { jcd = '04', hd, rno = '1' } = req.query;
   // 既定の日付はJSTで決める。UTCだと朝9時までは前日を見ることになり、
   // 「中身の無いページ」が返ってきて原因を取り違える
-  const date = hd || todayHd();
+  const q = raceParams(req, { jcd: '04' });
+  if (q.error) return res.status(400).json({ error: q.error, hint: 'URLを1本ずつ開いてください' });
+  const { jcd, rno } = q, date = q.hd;
   try {
     const url = `${BASE}/beforeinfo?jcd=${jcd}&hd=${date}&rno=${rno}`;
     const html = await fetchHtml(url);
@@ -1510,9 +1535,10 @@ app.get('/api/debug-before', async (req, res) => {
 });
 
 app.get('/api/debug-result', async (req, res) => {
-  const { jcd = '04', rno = '1' } = req.query;
   // 当日は日本時間で決める。UTCで決めると朝9時までは前日を見てしまう
-  const date = String(req.query.hd || todayHd());
+  const q = raceParams(req, { jcd: '04' });
+  if (q.error) return res.status(400).json({ error: q.error, hint: 'URLを1本ずつ開いてください' });
+  const { jcd, rno } = q, date = q.hd;
   const url = `${BASE}/raceresult?jcd=${jcd}&hd=${date}&rno=${rno}`;
   try {
     const r = await fetchOnce(url, 20000);
