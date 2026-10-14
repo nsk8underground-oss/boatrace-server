@@ -322,6 +322,27 @@ async function main() {
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
     check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v11_04_${hd}_12_0_ex1`])));
 
+    // 展示情報のデバッグ窓口。中身の無いページを見ているのか、解析が壊れているのかを
+    // 見分けられること（同じ見た目の短いページが返るので、何度も原因を取り違えた）
+    await seed({ hasExhibit: false });
+    const dbEmpty = await getJ(`/api/debug-before?jcd=04&hd=${hd}&rno=1`);
+    check('展示が無いページでは中身が無いと伝える',
+      /中身がありません/.test(dbEmpty.body.hint || ''), JSON.stringify(dbEmpty.body).slice(0, 200));
+    check('どのURLを見たのかを返す', /beforeinfo\?jcd=04/.test(dbEmpty.body.url || ''), dbEmpty.body.url);
+    await seed({ hasExhibit: true });
+    const dbOk = await getJ(`/api/debug-before?jcd=04&hd=${hd}&rno=1`);
+    check('展示があるときは注意書きを出さない', !dbOk.body.hint, JSON.stringify(dbOk.body.hint));
+    check('展示があれば6艇ぶん読める', Object.keys(dbOk.body.parsed?.exhibit || {}).length === 6,
+      JSON.stringify(dbOk.body.parsed?.exhibit).slice(0, 160));
+
+    // ダッシュボードの「共有予想あり」。ここも v6 を直に書いていたため、サーバーが
+    // v7 に上げた時点から常に false になっていた（アプリ側の同じ取り残しは #59 で修正済み）
+    const dash = await getJ('/api/dashboard');
+    const hira = (dash.body.venues || []).find(v => v.jcd === '04');
+    check('ダッシュボードが開催場を返す', !!hira, JSON.stringify(dash.body).slice(0, 200));
+    check('予想があれば共有予想ありと出る', hira?.shared === true,
+      `shared=${hira?.shared} nextRno=${hira?.nextRno}（予想を作ったのは12R）`);
+
     // 共有予想の窓口。アプリがキー文字列を自分で組み立てていた頃は、サーバーが
     // 版を上げるとアプリだけ古い版(v6)を探し続け、共有予想が永久に見つからなかった。
     // キーの組み立てをサーバーに寄せたので、同じ材料を渡せば必ず見つかる
@@ -562,6 +583,17 @@ async function main() {
       tight.expPayPerHit == null || loose.expPayPerHit == null || tight.expPayPerHit <= loose.expPayPerHit,
       `上限30=${tight.expPayPerHit}円 上限500=${loose.expPayPerHit}円`);
     eq('最高オッズの設定も返す（既定は上限なし）', sweep.body.current?.maxOdds, null);
+    // 「深く買うなら点数も広げないと釣り合わない」かを実データで試せること
+    const byPts = sweep.body.byPoints || [];
+    check('点数ごとの一覧も返す', byPts.length >= 3, JSON.stringify(byPts).slice(0, 160));
+    const narrow = byPts.find(x => x.maxPoints === 6), wide6 = byPts.find(x => x.maxPoints === 18);
+    check('点数を広げると買う点数が増える', wide6.points >= narrow.points,
+      `6点まで=${narrow.points} 18点まで=${wide6.points}`);
+    check('点数を広げると計算上の的中も増える', wide6.expHits >= narrow.expHits,
+      `6点まで=${narrow.expHits} 18点まで=${wide6.expHits}`);
+    const manyPts = await getJ('/api/replay?w=0.4&maxMain=8&maxAna=4');
+    check('点数を指定して試せる', manyPts.body.result?.points >= now.body.result.points,
+      `指定=${manyPts.body.result?.points} 既定=${now.body.result.points}`);
     // 上限と下限を同時に指定すると、その帯だけを買う
     const band = await getJ('/api/replay?w=0.4&minOdds=30&maxOdds=80');
     check('帯で絞れる', typeof band.body.result?.points === 'number'

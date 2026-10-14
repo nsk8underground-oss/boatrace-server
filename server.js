@@ -857,10 +857,13 @@ app.get('/api/dashboard', async (req, res) => {
       }
       if (!next) return { jcd, name, status: 'ended' };
 
-      // そのレースの共有予想があるか（展示反映後ex1を優先して確認）
+      // そのレースの共有予想があるか（展示反映後を優先して確認）。
+      // キーは predictCacheKey に組ませる。ここだけ v6 を直に書いていたため、
+      // サーバーが v7 に上げた時点から shared は常に false になっていた
+      // （アプリ側で同じ取り残しを #59 で直したが、ここが残っていた）
       let shared = false;
-      for (const ex of ['ex1', 'ex0']) {
-        if (await lookupSharedPredict(`v6_${jcd}_${hd}_${next.rno}_0_${ex}`)) { shared = true; break; }
+      for (const hasEx of [true, false]) {
+        if (await lookupSharedPredict(predictCacheKey(jcd, hd, next.rno, 0, hasEx))) { shared = true; break; }
       }
       const [h, m] = next.time.split(':').map(Number);
       return { jcd, name, status: 'open', nextRno: next.rno, nextTime: next.time, minsLeft: h * 60 + m - nowMin, shared };
@@ -1468,11 +1471,13 @@ app.get('/api/list-models', async (req, res) => {
 
 app.get('/api/debug-before', async (req, res) => {
   const { jcd = '04', hd, rno = '1' } = req.query;
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const date = hd || today;
+  // 既定の日付はJSTで決める。UTCだと朝9時までは前日を見ることになり、
+  // 「中身の無いページ」が返ってきて原因を取り違える
+  const date = hd || todayHd();
   try {
-    const html = await fetchHtml(`${BASE}/beforeinfo?jcd=${jcd}&hd=${date}&rno=${rno}`);
-    if (!html) return res.json({ error: 'HTML取得失敗' });
+    const url = `${BASE}/beforeinfo?jcd=${jcd}&hd=${date}&rno=${rno}`;
+    const html = await fetchHtml(url);
+    if (!html) return res.json({ error: 'HTML取得失敗', url });
     const $ = cheerio.load(html);
     const rows = [];
     $('tr').each((_, tr) => {
@@ -1484,7 +1489,21 @@ app.get('/api/debug-before', async (req, res) => {
       }
     });
     const parsed = parseBeforeinfo(html);
-    res.json({ rows, parsed, htmlLen: html.length });
+    // 何も読めなかったとき、解析の不具合なのか「中身の無いページ」なのかを
+    // 見分けられるようにする。boatrace.jp は開催していない日やまだ展示が
+    // 出ていないレースでも、同じ見た目の短いページを返す
+    const empty = !rows.length && !Object.keys(parsed.exhibit).length;
+    res.json({
+      url, hd: date, jcd, rno,
+      rows, parsed, htmlLen: html.length,
+      title: ((html.match(/<title>([^<]*)<\/title>/) || [])[1] || '').trim().slice(0, 80),
+      hint: empty
+        ? (html.length < 20000
+            ? 'ページに中身がありません（その日その場が開催していない／レース番号が無い／まだ展示が出ていない）。'
+              + '/api/dashboard で status:open の場と nextRno を確認して取り直してください'
+            : 'ページには中身がありますが解析できていません。boatrace.jp の作りが変わった可能性があります')
+        : undefined,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3186,12 +3205,14 @@ app.get('/api/replay', async (req, res) => {
     const days = [...new Set(usable.map(r => r.hd))].sort();
 
     // 1つだけ試したいときは数値を渡せる。省略時は見比べられるよう一覧で返す
-    const one = ['w', 'minOdds', 'maxOdds', 'minEv'].some(k => req.query[k] !== undefined);
+    const one = ['w', 'minOdds', 'maxOdds', 'minEv', 'maxMain', 'maxAna'].some(k => req.query[k] !== undefined);
     const num = (k, d) => { const v = Number(req.query[k]); return isFinite(v) ? v : d; };
     const w0 = Math.min(1, Math.max(0, num('w', EV_AI_WEIGHT)));
     if (one) {
       const opts = { minOdds: num('minOdds', EV_MIN_ODDS), maxOdds: num('maxOdds', EV_MAX_ODDS),
-        minEv: num('minEv', EV_MIN_MAIN) };
+        minEv: num('minEv', EV_MIN_MAIN),
+        maxMain: Math.min(12, Math.max(0, num('maxMain', MAX_MAIN))),
+        maxAna: Math.min(12, Math.max(0, num('maxAna', MAX_ANA))) };
       return res.json({ source: { races: usable.length, backfilled, days: days.join(',') },
         setting: { w: w0, ...opts }, result: replaySummary(usable, w0, opts) });
     }
@@ -3206,6 +3227,11 @@ app.get('/api/replay', async (req, res) => {
       // 「どこまで踏み込むか」は下限と同じくらい重要
       byMaxOdds: [30, 50, 100, 200, 500].map(maxOdds =>
         ({ maxOdds, ...replaySummary(usable, w0, { maxOdds }) })),
+      // 「深い人気薄まで買うなら、取り漏らさないよう点数も広げないと釣り合わない」かを見る。
+      // いまは点数が最大6点のまま上限なしで買っており、少点数と深い人気薄という
+      // いちばん噛み合わない組み合わせになっている可能性がある
+      byPoints: [[4, 2], [6, 3], [8, 4], [12, 6]].map(([maxMain, maxAna]) =>
+        ({ maxPoints: maxMain + maxAna, ...replaySummary(usable, w0, { maxMain, maxAna }) })),
       // AIの見立てをどれだけ信用するかを変えたとき。
       // expRoi はAIの確率から計算するので、wを上げれば必ず上がる。
       // モデルが自分の答案を自分で採点した数字なので、wを選ぶ根拠には使えない
@@ -3213,7 +3239,8 @@ app.get('/api/replay', async (req, res) => {
         ({ w, ...replaySummary(usable, w, {}) })),
       note: 'points・expPayPerHit・expRoi・skipped は計算で確定する（設定を変えた結果そのもの）。'
         + 'hit と roi は実際に起きたことで、的中数が少ないうちは大きくぶれるので判断に使わない。'
-        + '&w= &minOdds= &minEv= で1つだけ試せる。&days=N で直近N日に絞れる',
+        + '&w= &minOdds= &maxOdds= &minEv= &maxMain= &maxAna= で1つだけ試せる。'
+        + '&days=N で直近N日に絞れる',
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
