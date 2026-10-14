@@ -551,6 +551,22 @@ async function main() {
       hi.expPayPerHit == null || hi.expPayPerHit >= lo.expPayPerHit,
       `下限1=${lo.expPayPerHit}円 下限100=${hi.expPayPerHit}円`);
     check('重みごとの一覧も返す', (sweep.body.byWeight || []).length >= 4);
+    // 深い人気薄は見積もりの誤差がいちばん大きい。実測でも50倍以上だけを買う設定は
+    // 計算上1.4回の的中に対して実績0回だった。どこまで踏み込むかも試せること
+    const byMax = sweep.body.byMaxOdds || [];
+    check('上限ごとの一覧も返す', byMax.length >= 4, JSON.stringify(byMax).slice(0, 160));
+    const tight = byMax.find(x => x.maxOdds === 30), loose = byMax.find(x => x.maxOdds === 500);
+    check('上限を下げると点数が減る', tight.points <= loose.points,
+      `上限30=${tight.points}点 上限500=${loose.points}点`);
+    check('上限を下げると当たったときの配当も下がる',
+      tight.expPayPerHit == null || loose.expPayPerHit == null || tight.expPayPerHit <= loose.expPayPerHit,
+      `上限30=${tight.expPayPerHit}円 上限500=${loose.expPayPerHit}円`);
+    eq('最高オッズの設定も返す（既定は上限なし）', sweep.body.current?.maxOdds, null);
+    // 上限と下限を同時に指定すると、その帯だけを買う
+    const band = await getJ('/api/replay?w=0.4&minOdds=30&maxOdds=80');
+    check('帯で絞れる', typeof band.body.result?.points === 'number'
+      && band.body.result.points <= now.body.result.points,
+      `帯=${band.body.result?.points}点 制限なし=${now.body.result.points}点`);
     check('いまの設定を併記する', sweep.body.current?.w === 0.4 && sweep.body.current?.minOdds === 1,
       JSON.stringify(sweep.body.current));
     // 計算で確定する数字と、実際に起きたことを混同しないよう両方返す
