@@ -320,6 +320,8 @@ async function main() {
     check('プロンプトにオッズは含めない', !/オッズ上位|人気順\d/.test(st3.lastPrompt));
     check('気象庁の潮位がプロンプトに入る', /潮位:締切時点\d+cm/.test(st3.lastPrompt),
       (st3.lastPrompt.match(/潮位:.*/) || ['潮位の行が無い'])[0]);
+    check('チルトもプロンプトに入る', /チルト:-0\.5/.test(st3.lastPrompt),
+      (st3.lastPrompt.match(/.*チルト.*/) || ['チルトの記載が無い'])[0].slice(0, 160));
     check('サーバー由来のキーで共有キャッシュに入る', !!(await redis(['GET', `predict:v11_04_${hd}_12_0_ex1`])));
 
     // URLを2本まとめて貼ると、同じ名前のパラメータが2回届いて配列になる。
@@ -352,6 +354,14 @@ async function main() {
     check('展示があるときは注意書きを出さない', !dbOk.body.hint, JSON.stringify(dbOk.body.hint));
     check('展示があれば6艇ぶん読める', Object.keys(dbOk.body.parsed?.exhibit || {}).length === 6,
       JSON.stringify(dbOk.body.parsed?.exhibit).slice(0, 160));
+    // チルト。実ページで 枠|写真|名前|体重|展示|チルト の並びを確認して実装した。
+    // 小数1桁なのが見分けどころで、体重(52.0kg)や展示タイム(小数2桁)とは当たらない
+    eq('チルトも読める', dbOk.body.parsed?.exhibit?.['1']?.tilt, -0.5);
+    check('体重や展示タイムをチルトと取り違えない',
+      Object.values(dbOk.body.parsed.exhibit).every(e => e.tilt === -0.5 && e.exhibitTime >= 5 && e.exhibitTime < 8.5),
+      JSON.stringify(dbOk.body.parsed.exhibit).slice(0, 200));
+    check('列を途中で切らずに出す', (dbOk.body.rows?.[0]?.cells || []).length === dbOk.body.rows?.[0]?.cellCount,
+      JSON.stringify(dbOk.body.rows?.[0]));
 
     // ダッシュボードの「共有予想あり」。ここも v6 を直に書いていたため、サーバーが
     // v7 に上げた時点から常に false になっていた（アプリ側の同じ取り残しは #59 で修正済み）

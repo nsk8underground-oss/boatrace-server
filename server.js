@@ -398,7 +398,7 @@ function parseBeforeinfo(html) {
   if (weather.wave == null)  weather.wave    = parseFloat((bodyText.match(/波高\s*[:：]?\s*([\d.]+)/) || [])[1]) || 0;
 
   const entries = {};
-  const getEntry = lane => entries[lane] || (entries[lane] = { lane, course: null, exhibitTime: null, st: null });
+  const getEntry = lane => entries[lane] || (entries[lane] = { lane, course: null, exhibitTime: null, st: null, tilt: null });
 
   // スタート展示テーブル（実ページ）: 表示順 = 進入コース順。艇番とSTを取得。
   // 進入はここからしか取らない。以前は下の展示タイム表の1〜2列目にある1〜6の数字を
@@ -424,20 +424,26 @@ function parseBeforeinfo(html) {
     if (isNaN(lane) || lane < 1 || lane > 6) return;
     if (entries[lane]?.exhibitTime != null) return;
 
-    let exhibitTime = null, stFb = null;
+    let exhibitTime = null, stFb = null, tilt = null;
     for (let i = 1; i < cells.length; i++) {
       const t = normDigits(cells.eq(i).text().replace(/\s+/g, ''));
       if (exhibitTime == null && /^[5-8]\.\d{2}$/.test(t)) {
         const v = parseFloat(t);
         if (v >= 5 && v < 8.5) { exhibitTime = v; continue; }
       }
-
+      // チルトは展示タイムの次の列（実ページで 枠|写真|名前|体重|展示|チルト の並びを確認済み）。
+      // 小数1桁なのが見分けどころ。体重は52.0kg、展示タイムは小数2桁なので当たらない。
+      // 展示タイムより前は見ない（調整重量などの 0.0 を拾わないため）
+      if (exhibitTime != null && tilt == null && /^-?[0-3]\.\d$/.test(t)) {
+        tilt = parseFloat(t); continue;
+      }
       if (stFb == null && /^F?0?\.\d{2}$/.test(t)) { const m = t.match(/\.(\d{2})$/); stFb = parseFloat('0.' + m[1]); }
     }
     if (exhibitTime != null || stFb != null) {
       const en = getEntry(lane);
       if (en.exhibitTime == null) en.exhibitTime = exhibitTime;
       if (en.st == null && stFb != null) en.st = stFb;
+      if (en.tilt == null && tilt != null) en.tilt = tilt;
     }
   });
 
@@ -1395,6 +1401,7 @@ app.get('/api/all', async (req, res) => {
       exhibitTime: before.exhibit[r.lane]?.exhibitTime || null,
       exhibitST:   before.exhibit[r.lane]?.st || null,
       course:      before.exhibit[r.lane]?.course ?? null,   // 不明は不明のまま返す
+      tilt:        before.exhibit[r.lane]?.tilt ?? null,
     }));
     // 潮位は boatrace.jp に無いので気象庁の推算値を天候情報に足して返す
     const responseData = { ...rl, weather: {
@@ -1463,14 +1470,18 @@ app.get('/api/debug', async (req, res) => {
     });
 
     // tbody.is-fs12 の最初のtr（td_count多い行）の全セルを確認
+    // 1艇ぶんは複数行に分かれている。先頭行（選手・勝率・モーター）だけでなく
+    // 残りの行も出す。今節成績＝前走の内容はそちらに入っている
     result.main_rows = [];
     $('tbody.is-fs12').each((i, tbody) => {
-      const firstTr = $('tr', tbody).first();
+      const trs = $('tr', tbody);
       result.main_rows.push({
         tbody_index: i,
-        tr_class: firstTr.attr('class') || 'no-class',
-        td_count: firstTr.find('td').length,
-        all_tds: firstTr.find('td').map((_, td) => $(td).text().replace(/\s+/g,' ').trim().slice(0, 50)).get()
+        rows: trs.map((j, tr) => ({
+          tr_class: $(tr).attr('class') || 'no-class',
+          td_count: $(tr).find('td').length,
+          tds: $(tr).find('td').map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 40)).get(),
+        })).get(),
       });
     });
 
@@ -1510,7 +1521,8 @@ app.get('/api/debug-before', async (req, res) => {
       if (!cells.length) return;
       const first = cells.first().text().trim();
       if (['1','2','3','4','5','6'].includes(first)) {
-        rows.push({ cellCount: cells.length, cells: cells.map((_,td) => $(td).text().replace(/\s+/g,' ').trim().slice(0,20)).get().slice(0,7) });
+        // 列を7で切ると部品交換などが見えない。全列そのまま出す
+        rows.push({ cellCount: cells.length, cells: cells.map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 24)).get() });
       }
     });
     const parsed = parseBeforeinfo(html);
@@ -2305,7 +2317,10 @@ function buildAutoPrompt(venue, rno, racers, weather, opts = {}) {
     `${order ? `${r.course}コース ` : ''}${r.lane}号艇:${r.name || '不明'}(${r.cls || '—'}/${r.branch || '—'}) ` +
     `全国${r.allRate || 0}/当地${r.localRate || 0}/2連${r.all2Rate || 0}% F/L:${r.fl || '0/0'} avgST:${r.avgST || 0.18} ` +
     `モーター:${motorLine(r)} ` +
-    `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}`;
+    `展示:${r.exhibitTime || '不明'} 展示ST:${r.exhibitST || '不明'}` +
+    // チルトは上げるほど伸び寄り（直線が速い代わりに回り足が落ちる）。
+    // 0.0 が標準で、-0.5 は回り足重視。外から攻める艇は上げてくることがある
+    (r.tilt != null ? ` チルト:${r.tilt > 0 ? '+' : ''}${r.tilt}` : '');
 
   let lines, shinnyu;
   if (order) {
@@ -2603,6 +2618,7 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
     exhibitTime: before.exhibit[r.lane]?.exhibitTime ?? manual[r.lane]?.exhibitTime ?? null,
     exhibitST: before.exhibit[r.lane]?.st ?? manual[r.lane]?.st ?? null,
     course: before.exhibit[r.lane]?.course ?? null,
+    tilt: before.exhibit[r.lane]?.tilt ?? null,
     motorGrade: motors[r.motorNo]?.grade || '',
     motorInfo: motors[r.motorNo] || null,
   }));
