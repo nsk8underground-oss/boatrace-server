@@ -2163,6 +2163,46 @@ async function postToX(text) {
 
 // 診断: X認証情報の状態と、読み取りAPIが通るかどうかを確認する。
 // 読み取りが通るのに投稿が401なら書き込み権限の問題、読み取りも401なら認証情報自体の問題
+// BOTがいま動いているか、止まっているならなぜかを返す。
+//
+// X が 401/402/403 を返すと xhold を立てて予想生成ごと1時間止める仕組みがあるが、
+// その理由を外から聞く手段が無かった。cron の実行履歴を見るか CRON_SECRET を
+// URLに付けて叩くしかなく、「止まった理由はサーバーが持っているのに聞けない」
+// 状態だった。秘密は出さず、状態だけを返す
+app.get('/api/bot-status', async (req, res) => {
+  const hd = todayHd();
+  try {
+    const [hold, posted, skipped, logRaw] = await Promise.all([
+      redisCmd('GET', 'xhold'),
+      redisCmd('GET', `xcount:${hd}`),
+      redisCmd('GET', `xskip:${hd}`),
+      redisCmd('LRANGE', `xlogl:${hd}`, -5, -1),
+    ]);
+    const log = (Array.isArray(logRaw) ? logRaw : []).map(r => {
+      try { const e = JSON.parse(r); return { t: e.t, venue: e.venue, rno: e.rno, points: (e.matoi || []).length + (e.ana || []).length }; }
+      catch { return null; }
+    }).filter(Boolean);
+    res.json({
+      hd,
+      // ここに文字列が入っていれば、その理由で投稿を止めている
+      paused: hold || null,
+      pausedHint: hold
+        ? 'Xが投稿を受け付けない状態（認証・利用枠）です。直したら /api/auto-post に &resume=1 を付けて実行すると即座に再開します。付けなくても1時間で自動的に解除されます'
+        : null,
+      today: {
+        posted: parseInt(posted || '0', 10),
+        skipped: parseInt(skipped || '0', 10),   // 見送りとして投稿した件数
+        cap: 8,
+        lastPosts: log,
+      },
+      xConfigured: X_ENABLED,                     // 4つの認証情報が揃っているか（値は出さない）
+      note: 'paused が null で posted が増えていないなら、Xではなく cron か対象レースの側を疑ってください',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/x-health', async (req, res) => {
   const fp = v => v ? { set: true, len: v.length } : { set: false };
   const env = {

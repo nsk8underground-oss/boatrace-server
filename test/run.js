@@ -342,6 +342,18 @@ async function main() {
     check('出走表のデバッグ窓口も同じく止める',
       (await getJ(`/api/debug?jcd=04&hd=${hd}&rno=99`)).status === 400);
 
+    // BOTがいま動いているか、止まっているならなぜかを聞ける窓口。
+    // Xが投稿を受け付けないと xhold を立てて予想生成ごと止めるが、
+    // その理由を外から聞く手段が無く、黙って止まったように見えていた
+    const st0 = await getJ('/api/bot-status');
+    check('動いているときは止まっていないと返す', st0.body.paused === null, JSON.stringify(st0.body).slice(0, 200));
+    check('認証情報が揃っているかも返す', st0.body.xConfigured === true, String(st0.body.xConfigured));
+    await redis(['SET', 'xhold', 'HTTP402 Usage cap exceeded']);
+    const st1 = await getJ('/api/bot-status');
+    check('止まっているときは理由を返す', /HTTP402/.test(st1.body.paused || ''), JSON.stringify(st1.body.paused));
+    check('直し方も添える', /resume=1/.test(st1.body.pausedHint || ''), st1.body.pausedHint);
+    await redis(['DEL', 'xhold']);
+
     // 展示情報のデバッグ窓口。中身の無いページを見ているのか、解析が壊れているのかを
     // 見分けられること（同じ見た目の短いページが返るので、何度も原因を取り違えた）
     await seed({ hasExhibit: false });
