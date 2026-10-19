@@ -353,6 +353,20 @@ async function main() {
     check('止まっているときは理由を返す', /HTTP402/.test(st1.body.paused || ''), JSON.stringify(st1.body.paused));
     check('直し方も添える', /resume=1/.test(st1.body.pausedHint || ''), st1.body.pausedHint);
     await redis(['DEL', 'xhold']);
+    // 「cronが叩いていない」のか「叩いているが毎回何も起きない」のかは、
+    // 外からは同じ『投稿ゼロ』にしか見えない。呼ばれたこと自体を残して区別する
+    await redis(['DEL', 'xlastrun']);
+    const stNever = await getJ('/api/bot-status');
+    eq('一度も呼ばれていなければ null', stNever.body.lastRun, null);
+    check('その場合は cron を疑うよう書く', /cron-job\.org/.test(stNever.body.note || ''), stNever.body.note);
+    await cron('mode=races');
+    const stRan = await getJ('/api/bot-status');
+    check('呼ばれたら時刻が残る', typeof stRan.body.lastRun?.at === 'string', JSON.stringify(stRan.body.lastRun));
+    eq('どのモードで呼ばれたかも残る', stRan.body.lastRun?.mode, 'races');
+    // dryRun は人が様子を見るための実行なので、cronの記録を上書きしない
+    const before = stRan.body.lastRun.at;
+    await getJ('/api/auto-post?mode=races&dryRun=1');
+    eq('dryRunでは上書きしない', (await getJ('/api/bot-status')).body.lastRun?.at, before);
 
     // 展示情報のデバッグ窓口。中身の無いページを見ているのか、解析が壊れているのかを
     // 見分けられること（同じ見た目の短いページが返るので、何度も原因を取り違えた）

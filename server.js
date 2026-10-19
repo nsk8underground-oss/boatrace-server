@@ -2172,12 +2172,15 @@ async function postToX(text) {
 app.get('/api/bot-status', async (req, res) => {
   const hd = todayHd();
   try {
-    const [hold, posted, skipped, logRaw] = await Promise.all([
+    const [hold, posted, skipped, logRaw, lastRunRaw] = await Promise.all([
       redisCmd('GET', 'xhold'),
       redisCmd('GET', `xcount:${hd}`),
       redisCmd('GET', `xskip:${hd}`),
       redisCmd('LRANGE', `xlogl:${hd}`, -5, -1),
+      redisCmd('GET', 'xlastrun'),
     ]);
+    let lastRun = null;
+    try { lastRun = lastRunRaw ? JSON.parse(lastRunRaw) : null; } catch {}
     const log = (Array.isArray(logRaw) ? logRaw : []).map(r => {
       try { const e = JSON.parse(r); return { t: e.t, venue: e.venue, rno: e.rno, points: (e.matoi || []).length + (e.ana || []).length }; }
       catch { return null; }
@@ -2196,7 +2199,11 @@ app.get('/api/bot-status', async (req, res) => {
         lastPosts: log,
       },
       xConfigured: X_ENABLED,                     // 4つの認証情報が揃っているか（値は出さない）
-      note: 'paused が null で posted が増えていないなら、Xではなく cron か対象レースの側を疑ってください',
+      // 最後に自動投稿が呼ばれた時刻。これが古ければ cron が叩いていない
+      lastRun,
+      note: lastRun
+        ? 'lastRun が数十分以内なら cron は動いている。投稿ゼロなら対象レースか予想生成の側を疑ってください'
+        : 'まだ一度も呼ばれていない（または2日以上前）。cron-job.org のジョブが止まっている可能性があります',
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -3374,6 +3381,17 @@ app.all('/api/auto-post', async (req, res) => {
       hint: dryRun ? 'dryRun はサイトにログインした状態なら secret 無しで見られます'
                    : '投稿を伴う実行には x-cron-secret か ?secret= が必要です',
     });
+  }
+
+  // 呼ばれたこと自体を記録する。「cronが叩いていない」のか「叩いているが毎回
+  // 何も起きずに終わっている」のかは、外からは同じ『投稿ゼロ』にしか見えない。
+  // 結果ではなく呼び出しを残すのは、途中で早期returnしても必ず書き終えるため
+  if (!dryRun) {
+    try {
+      await redisCmd('SET', 'xlastrun',
+        JSON.stringify({ at: new Date().toISOString(), mode: String(req.query.mode || 'races') }),
+        'EX', '172800');
+    } catch {}
   }
 
   // Vercel の30秒制限内で必ず応答を返すための全体締切
