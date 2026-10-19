@@ -1477,11 +1477,22 @@ app.get('/api/debug', async (req, res) => {
       const trs = $('tr', tbody);
       result.main_rows.push({
         tbody_index: i,
-        rows: trs.map((j, tr) => ({
-          tr_class: $(tr).attr('class') || 'no-class',
-          td_count: $(tr).find('td').length,
-          tds: $(tr).find('td').map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 40)).get(),
-        })).get(),
+        rows: trs.map((j, tr) => {
+          const tds = $(tr).find('td');
+          const text = tds.map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 40)).get();
+          // 文字が空でも中身がある（画像やspanで着順を描いている）ことがあるので、
+          // 空に見えるときだけHTMLそのものを少し出す。
+          // 「データが無い」のか「文字として読めていない」のかを区別するため
+          const blank = text.every(t => !t);
+          return {
+            tr_class: $(tr).attr('class') || 'no-class',
+            td_count: tds.length,
+            tds: text,
+            ...(blank && tds.length ? {
+              htmlSample: tds.slice(0, 4).map((_, td) => ($(td).html() || '').replace(/\s+/g, ' ').trim().slice(0, 120)).get(),
+            } : {}),
+          };
+        }).get(),
       });
     });
 
@@ -1525,6 +1536,20 @@ app.get('/api/debug-before', async (req, res) => {
         rows.push({ cellCount: cells.length, cells: cells.map((_, td) => $(td).text().replace(/\s+/g, ' ').trim().slice(0, 24)).get() });
       }
     });
+    // 部品交換がページのどこに書かれているかを探す。艇ごとの表の列は
+    // このレースでは全艇とも空か同じ値（"R"）で、交換の有無を表していなかった。
+    // 推測で列を決めると、進入を枠番で埋めていたときと同じ事故になる
+    const partsHits = [];
+    for (const kw of ['部品交換', 'プロペラ', '交換']) {
+      let from = 0;
+      for (let n = 0; n < 3; n++) {
+        const at = html.indexOf(kw, from);
+        if (at < 0) break;
+        partsHits.push({ kw, at, around: html.slice(Math.max(0, at - 120), at + 200).replace(/\s+/g, ' ') });
+        from = at + kw.length;
+      }
+    }
+
     const parsed = parseBeforeinfo(html);
     // 何も読めなかったとき、解析の不具合なのか「中身の無いページ」なのかを
     // 見分けられるようにする。boatrace.jp は開催していない日やまだ展示が
@@ -1533,6 +1558,8 @@ app.get('/api/debug-before', async (req, res) => {
     res.json({
       url, hd: date, jcd, rno,
       rows, parsed, htmlLen: html.length,
+      // 部品交換の在りかを探した結果。見つからなければこのレースでは交換が無い
+      parts: { found: partsHits.length, hits: partsHits.slice(0, 6) },
       title: ((html.match(/<title>([^<]*)<\/title>/) || [])[1] || '').trim().slice(0, 80),
       hint: empty
         ? (html.length < 20000
@@ -2136,6 +2163,46 @@ async function postToX(text) {
 
 // 診断: X認証情報の状態と、読み取りAPIが通るかどうかを確認する。
 // 読み取りが通るのに投稿が401なら書き込み権限の問題、読み取りも401なら認証情報自体の問題
+// BOTがいま動いているか、止まっているならなぜかを返す。
+//
+// X が 401/402/403 を返すと xhold を立てて予想生成ごと1時間止める仕組みがあるが、
+// その理由を外から聞く手段が無かった。cron の実行履歴を見るか CRON_SECRET を
+// URLに付けて叩くしかなく、「止まった理由はサーバーが持っているのに聞けない」
+// 状態だった。秘密は出さず、状態だけを返す
+app.get('/api/bot-status', async (req, res) => {
+  const hd = todayHd();
+  try {
+    const [hold, posted, skipped, logRaw] = await Promise.all([
+      redisCmd('GET', 'xhold'),
+      redisCmd('GET', `xcount:${hd}`),
+      redisCmd('GET', `xskip:${hd}`),
+      redisCmd('LRANGE', `xlogl:${hd}`, -5, -1),
+    ]);
+    const log = (Array.isArray(logRaw) ? logRaw : []).map(r => {
+      try { const e = JSON.parse(r); return { t: e.t, venue: e.venue, rno: e.rno, points: (e.matoi || []).length + (e.ana || []).length }; }
+      catch { return null; }
+    }).filter(Boolean);
+    res.json({
+      hd,
+      // ここに文字列が入っていれば、その理由で投稿を止めている
+      paused: hold || null,
+      pausedHint: hold
+        ? 'Xが投稿を受け付けない状態（認証・利用枠）です。直したら /api/auto-post に &resume=1 を付けて実行すると即座に再開します。付けなくても1時間で自動的に解除されます'
+        : null,
+      today: {
+        posted: parseInt(posted || '0', 10),
+        skipped: parseInt(skipped || '0', 10),   // 見送りとして投稿した件数
+        cap: 8,
+        lastPosts: log,
+      },
+      xConfigured: X_ENABLED,                     // 4つの認証情報が揃っているか（値は出さない）
+      note: 'paused が null で posted が増えていないなら、Xではなく cron か対象レースの側を疑ってください',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/x-health', async (req, res) => {
   const fp = v => v ? { set: true, len: v.length } : { set: false };
   const env = {
