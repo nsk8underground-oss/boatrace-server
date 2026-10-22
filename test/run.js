@@ -729,6 +729,21 @@ async function main() {
     check('X の上限280（全角2文字）に収まる',
       [...tw].reduce((s, c) => s + (c.codePointAt(0) > 0x1100 ? 2 : 1), 0) <= 280, `長さ=${tw.length}`);
     /* ============================================================ */
+    console.log('\n【8.5】呼び出し側が待てる時間内に応答を返す');
+    // cron-job.org の実行タイムアウトは30秒。これを超えると失敗として記録され、
+    // 失敗が続くとジョブごと自動停止される。実際にそれで投稿が止まった。
+    // 取得18秒・AI生成20秒と別々に上限があるだけで、合計を抑える仕組みが無かった
+    await seedDay(AI_EDGE, [9]);
+    await seed({ slowMs: 9000 });                     // boatrace.jp が重い状態
+    await redis(['DEL', `openvenues:${hd}`, `sched:04:${hd}`]);  // その日最初の実行
+    const tSlow = Date.now();
+    const slowRes = await cron('mode=races');
+    const slowMs = Date.now() - tSlow;
+    await seed({ slowMs: 0 });
+    check('重いときでも25秒の予算内に応答する', slowMs < 28000, `${slowMs}ms / ${JSON.stringify(slowRes).slice(0, 120)}`);
+    check('打ち切っても壊れずに理由を返す',
+      slowRes.ok === true || typeof slowRes.error === 'string', JSON.stringify(slowRes).slice(0, 160));
+
     console.log('\n【9】Basic認証の総当たり対策');
     const badAuth = 'Basic ' + Buffer.from('guest:0000').toString('base64');
     let blocked = 0, lastStatus = 0;
