@@ -66,6 +66,7 @@ function createStub() {
     resultNoData: false,        // 結果ページの代わりに「データがありません」を返す
     oddsFailFirst: 0,           // 3連単オッズの最初のN回だけ失敗させる
     oddsScale: 1,               // オッズを一律に動かす（締切直前の変動を再現する）
+    slowMs: 0,                  // boatrace.jp の応答を遅らせる（混雑時を再現する）
     shinnyu: [1, 2, 3, 4, 5, 6],// スタート展示の進入（内から順の艇番）。null でスタート展示なし
     geminiCalls: 0,
     lastPrompt: '',
@@ -174,7 +175,11 @@ function createStub() {
     const u = new URL(req.url, 'http://127.0.0.1');
     const body = cb => { let b = ''; req.on('data', c => b += c); req.on('end', () => cb(b)); };
     const json = o => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
-    const html = h => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(h); };
+    // boatrace.jp のページだけ遅らせる（Redis や Gemini は遅くしない）。
+    // 混雑時に全体の締切を守れるかを試すため
+    const html = h => setTimeout(() => {
+      res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(h);
+    }, state.slowMs);
 
     if (req.method === 'POST' && u.pathname === '/redis') {
       return body(b => { let a = []; try { a = JSON.parse(b); } catch {} json({ result: redis(a) }); });
@@ -193,6 +198,7 @@ function createStub() {
         if (d.resultNoData !== undefined) state.resultNoData = !!d.resultNoData;
         if (d.oddsFailFirst !== undefined) state.oddsFailFirst = d.oddsFailFirst | 0;
         if (d.oddsScale !== undefined) state.oddsScale = Number(d.oddsScale) || 1;
+        if (d.slowMs !== undefined) state.slowMs = Number(d.slowMs) || 0;
         if (d.shinnyu !== undefined) state.shinnyu = Array.isArray(d.shinnyu) ? d.shinnyu : null;
         if (d.resetCalls) { state.geminiCalls = 0; state.tweets.length = 0; }
         res.writeHead(200).end('ok');

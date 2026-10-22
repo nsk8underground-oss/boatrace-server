@@ -208,9 +208,10 @@ const ORIGIN_JMA      = testOrigin('TEST_ORIGIN_JMA',      'https://www.data.jma
 const BASE = `${ORIGIN_BOATRACE}/owpc/pc/race`;
 const UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36';
 
-async function fetchHtml(url, retries = 3) {
-  // Vercelの実行時間制限（30秒）内に必ず収まるよう、リトライ込みの合計時間に上限を設ける
-  const deadline = Date.now() + 20000;
+async function fetchHtml(url, retries = 3, deadlineAt = null) {
+  // リトライ込みの合計時間に上限を設ける。呼び出し側が全体の締切を持っているときは
+  // そちらに合わせる（取り直しが全体の締切を食いつぶすのを防ぐ）
+  const deadline = deadlineAt ? Math.min(deadlineAt, Date.now() + 20000) : Date.now() + 20000;
   for (let i = 0; i <= retries; i++) {
     try {
       const controller = new AbortController();
@@ -731,7 +732,10 @@ function memSet(key, data, ttlMs) {
 }
 
 // 本日の開催場一覧（メモリ → Redis → 一覧ページ → 全場プローブ の順に試す）
-async function getOpenVenues(hd) {
+// maxMs: 準備にかけてよい時間の上限。自動投稿は呼び出し側のタイムアウトが
+// 決まっているので、その日最初の実行（キャッシュが空で全場を取りに行く）でも
+// 時間内に切り上げる必要がある。省略時は従来どおり
+async function getOpenVenues(hd, maxMs = 30000) {
   const mkey = `openvenues:${hd}`;
   const mem = memGet(mkey);
   if (mem) return mem;
@@ -742,8 +746,11 @@ async function getOpenVenues(hd) {
   } catch {}
 
   // 一覧ページは構造変更で取れなくなっているため短めに切り上げ、確実なプローブへ回す
+  const until = Date.now() + maxMs;
+  const left = () => until - Date.now();
   for (const url of TODAY_INDEX_URLS(hd)) {
-    const found = extractJcds(await fetchQuick(url, 3000));
+    if (left() < 2000) break;
+    const found = extractJcds(await fetchQuick(url, Math.min(3000, left())));
     if (found.length) {
       memSet(mkey, found, 600000);
       await redisCmd('SET', mkey, JSON.stringify(found), 'EX', '600');
@@ -751,7 +758,10 @@ async function getOpenVenues(hd) {
     }
   }
 
-  const probed = await probeOpenVenues(hd, 12000);
+  // 残り時間が無いなら空で返す。呼び出し側は「開催なし」として次回に回し、
+  // そのあいだに書き込まれたキャッシュで次の実行が速くなる
+  if (left() < 2000) return [];
+  const probed = await probeOpenVenues(hd, Math.min(12000, left()));
   // 当日の開催場は途中で増減しないので長めにキャッシュしてプローブの頻度を下げる。
   // await しないと関数終了時に書き込みが破棄され、毎回プローブし直すことになる
   if (probed.length) {
@@ -762,7 +772,7 @@ async function getOpenVenues(hd) {
 }
 
 // 1場ぶんの締切時刻表（メモリ → Redis → 出走表の取得）
-async function getSchedule(jcd, hd) {
+async function getSchedule(jcd, hd, maxMs = 15000) {
   const mkey = `sched:${jcd}:${hd}`;
   const mem = memGet(mkey);
   if (mem) return mem;
@@ -770,7 +780,8 @@ async function getSchedule(jcd, hd) {
     const cached = JSON.parse(await redisCmd('GET', mkey) || 'null');
     if (cached && cached.length) { memSet(mkey, cached, 86400000); return cached; }
   } catch {}
-  const html = await fetchQuick(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, 15000);
+  if (maxMs < 1500) return null;
+  const html = await fetchQuick(`${BASE}/racelist?jcd=${jcd}&hd=${hd}&rno=1`, Math.min(15000, maxMs));
   if (!html) return null;
   const rl = parseRacelist(html, jcd, hd, '1');
   if (!rl.schedule?.length) return null;
@@ -2269,6 +2280,17 @@ const MAX_ANA      = 2;      // 穴の最大点数
 const EXHIBIT_GRACE_LEAD = 25;   // 締切がこれ以内なら展示が無くても投稿する（分）
 const RESULT_WAIT_MIN    = 60;   // 締切からこれだけ経った未確定は待たずに投稿する（分）
 const SKIP_POST_CAP      = 2;    // 1日に投稿する「見送り」の上限（買い目の投稿枠とは別勘定）
+// 自動投稿1回ぶんの全体の持ち時間。
+//
+// Vercelの関数上限は60秒だが、実際に待てるのは呼び出し側（cron）の都合で決まる。
+// cron-job.org の実行タイムアウトは30秒で、超えると失敗として記録され、
+// 失敗が続くとジョブごと自動停止される。実際にそれで投稿が止まった
+// （その日の最初の実行は開催場と時刻表のキャッシュが空で、24場ぶん取りに行くため遅い）。
+// 25秒で応答を返し切り、間に合わないレースは次の実行（15分後）に回す
+const AUTOPOST_BUDGET_MS = (() => {
+  const v = Number(process.env.AUTOPOST_BUDGET_MS);
+  return isFinite(v) && v >= 10000 && v <= 55000 ? v : 25000;
+})();
 const EV_SUM_LIMIT = 150;    // 確率の合計がこれを超える出力は見積もり自体を信用しない
 
 // AIの確率をどれだけ信用するか（0=市場の見立てだけ / 1=AIの見立てだけ）。
@@ -2610,13 +2632,21 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   // 3連単オッズは買い目を決める材料そのもの。ここが空だと期待値を出せず、
   // 「確率の高い順に6点」を買うだけの動作に落ちる（それが回収率を大きく下げていた）。
   // アプリ側の /api/odds3t と同じく、取れるまで数回試す
+  //
+  // 全体の締切（opts.deadline）を受け取っているときは、取得とAI生成をその中で割り振る。
+  // 以前は取得18秒・AI生成20秒と別々に上限があるだけで合計を抑える仕組みが無く、
+  // 混み合うと40秒を超えて呼び出し側のタイムアウトに引っかかっていた
+  const deadline = opts.deadline || (Date.now() + 40000);
+  const left = () => deadline - Date.now();
+  // AI生成に最低6秒を残して、残りを取得に回す
+  const fetchMs = Math.max(4000, Math.min(18000, left() - 6000));
   const fetchOdds3t = async () => {
-    try { return await fetchHtml(`${BASE}/odds3t?${q}`, 2); } catch { return null; }
+    try { return await fetchHtml(`${BASE}/odds3t?${q}`, 2, Date.now() + fetchMs); } catch { return null; }
   };
   const [rlH, beforeH, o1H, o3H, tideDay] = await Promise.all([
-    fetchQuick(`${BASE}/racelist?${q}`, 18000),
-    fetchQuick(`${BASE}/beforeinfo?${q}`, 18000),
-    fetchQuick(`${BASE}/oddstf?${q}`, 8000),
+    fetchQuick(`${BASE}/racelist?${q}`, fetchMs),
+    fetchQuick(`${BASE}/beforeinfo?${q}`, fetchMs),
+    fetchQuick(`${BASE}/oddstf?${q}`, Math.min(8000, fetchMs)),
     fetchOdds3t(),
     fetchTideDay(jcd, hd),
   ]);
@@ -2702,7 +2732,9 @@ async function getOrCreatePrediction(jcd, hd, rno, budgetMs, opts = {}) {
   if (closeMin == null) { try { closeMin = closeMinOf(await getSchedule(jcd, hd), rno); } catch {} }
   const prompt = buildAutoPrompt(venue, rno, racers, before.weather || {},
     { ...opts, tide: tideLine(tideDay, closeMin) });
-  const g = await callGemini(prompt, budgetMs);
+  // 残り時間からAI生成の持ち時間を決める。budgetMs が渡されていればそれも上限にする
+  const geminiMs = Math.max(6000, Math.min(budgetMs || 20000, left()));
+  const g = await callGemini(prompt, geminiMs);
   if (!g.ok) return { error: g.body?.error || '予想生成失敗', status: g.status, body: g.body };
   // 買い目はAIに選ばせず、AIの確率見積もりと実オッズの期待値で決める。
   // 確定後のJSONをキャッシュに入れるので、アプリ側も同じ買い目を見ることになる
@@ -3394,8 +3426,8 @@ app.all('/api/auto-post', async (req, res) => {
     } catch {}
   }
 
-  // Vercel の30秒制限内で必ず応答を返すための全体締切
-  const tEnd = Date.now() + 55000;
+  // 呼び出し側（cron）が待てる時間内に必ず応答を返すための全体締切
+  const tEnd = Date.now() + AUTOPOST_BUDGET_MS;
   const timing = { redis: REDIS_ENABLED };
   const mode = req.query.mode === 'results' ? 'results'
              : req.query.mode === 'motors'  ? 'motors'
@@ -3539,17 +3571,20 @@ app.all('/api/auto-post', async (req, res) => {
     const cnt = parseInt(await redisCmd('GET', `xcount:${hd}`) || '0');
     if (cnt >= dailyCap) return res.json({ ok: true, skipped: `本日の投稿上限(${dailyCap}件)に到達` });
 
-    // 開催場（ダッシュボードと同じ検出ロジック・キャッシュを共有）
+    // 開催場（ダッシュボードと同じ検出ロジック・キャッシュを共有）。
+    // その日最初の実行はキャッシュが空で全場を取りに行くため、ここが最も時間を使う。
+    // 見切りの判定はこの後なので、準備段階にも締切を渡さないと間に合わない
     const tOpen = Date.now();
-    const open = await getOpenVenues(hd);
+    const open = await getOpenVenues(hd, Math.max(2000, tEnd - Date.now() - 12000));
     timing.openVenues = Date.now() - tOpen;
     if (!open.length) return res.json({ ok: true, skipped: '本日の開催なし', timing });
 
     // 締切時刻表は全場ぶんを並列で取得する。
     // 順番に取ると開催場が多い日（12場など）に Vercel の制限を大きく超えてしまう
     const tSched = Date.now();
+    const schedMs = Math.max(1500, tEnd - Date.now() - 10000);
     const scheds = await Promise.all(open.map(async ({ jcd, name }) => (
-      { jcd, name, schedule: await getSchedule(jcd, hd) }
+      { jcd, name, schedule: await getSchedule(jcd, hd, schedMs) }
     )));
     timing.schedules = Date.now() - tSched;
 
@@ -3624,9 +3659,10 @@ app.all('/api/auto-post', async (req, res) => {
 
     // 残り時間が足りなければ投稿せず終了する（次回の実行で拾う）。
     // この実行で開催場と締切時刻表はキャッシュされるので、次回は高速に処理できる。
-    // データ取得に最大18秒＋AI生成に最低9秒を見込み、それを下回るなら見送る
+    // 取得に最低4秒＋AI生成に最低6秒＋投稿に2秒を見込み、余裕を足して下回るなら見送る。
+    // その日の最初の実行はここで止まることが多いが、キャッシュが温まるので次回は通る
     const remain = tEnd - Date.now();
-    if (remain < 28000) {
+    if (remain < 15000) {
       await release();
       return res.json({ ok: true, skipped: '準備に時間がかかったため次回の実行で投稿します', target, remainMs: remain, timing });
     }
@@ -3634,7 +3670,10 @@ app.all('/api/auto-post', async (req, res) => {
     // 締切まで間があるレースは展示が出てから投稿する。
     // 締切が近い場合は、展示が取れなくても（取得失敗のこともある）そのまま出す
     const needExhibit = target.lead > EXHIBIT_GRACE_LEAD;
-    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, Math.min(20000, remain - 19000), { needExhibit, needEV: true });
+    // 投稿に2秒残して、取得とAI生成をその中で割り振らせる。
+    // 以前は取得18秒・AI生成20秒と別々に上限があるだけで、合計を抑える仕組みが無かった
+    const got = await getOrCreatePrediction(target.jcd, hd, target.rno, null,
+      { needExhibit, needEV: true, deadline: tEnd - 2000 });
     timing.predict = Date.now() - tPred;
     if (got.wait)  { await release(); return res.json({ ok: true, skipped: `${got.wait}（締切${target.lead}分前）。次の実行で投稿します`, target, timing }); }
     if (got.error) { await release(); return res.json({ ok: false, target, error: got.error, timing }); }
