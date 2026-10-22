@@ -346,6 +346,7 @@ async function main() {
     // Xが投稿を受け付けないと xhold を立てて予想生成ごと止めるが、
     // その理由を外から聞く手段が無く、黙って止まったように見えていた
     const st0 = await getJ('/api/bot-status');
+    const stRan0 = st0;
     check('動いているときは止まっていないと返す', st0.body.paused === null, JSON.stringify(st0.body).slice(0, 200));
     check('認証情報が揃っているかも返す', st0.body.xConfigured === true, String(st0.body.xConfigured));
     await redis(['SET', 'xhold', 'HTTP402 Usage cap exceeded']);
@@ -355,6 +356,13 @@ async function main() {
     await redis(['DEL', 'xhold']);
     // 「cronが叩いていない」のか「叩いているが毎回何も起きない」のかは、
     // 外からは同じ『投稿ゼロ』にしか見えない。呼ばれたこと自体を残して区別する
+    // 月間の投稿数。Xの枠を使い切ると HTTP402 で完全に止まる（実際に止まった）。
+    // 手前で自分から止めて、残りが見えるようにしておく
+    check('今月の残り枠を返す', stRan0.body.monthly?.cap === 450
+      && typeof stRan0.body.monthly?.used === 'number'
+      && stRan0.body.monthly.left === 450 - stRan0.body.monthly.used,
+      JSON.stringify(stRan0.body.monthly));
+
     await redis(['DEL', 'xlastrun']);
     const stNever = await getJ('/api/bot-status');
     eq('一度も呼ばれていなければ null', stNever.body.lastRun, null);
@@ -729,6 +737,37 @@ async function main() {
     check('X の上限280（全角2文字）に収まる',
       [...tw].reduce((s, c) => s + (c.codePointAt(0) > 0x1100 ? 2 : 1), 0) <= 280, `長さ=${tw.length}`);
     /* ============================================================ */
+    console.log('\n【8.4】Xの月間の投稿枠を自分で守る');
+    // 枠を使い切ると X が HTTP402 credits depleted を返し、投稿が完全に止まる
+    //（実際に止まった）。これまで月間の投稿数を数えておらず、壁にぶつかるまで
+    // 気づけなかった。手前で自分から止めて、理由を残す
+    const mKey = `xmonth:${hd.slice(0, 6)}`;
+    await seedDay(AI_EDGE, [6]);
+    await redis(['SET', mKey, '450']);
+    const capped = await cron('mode=races');
+    check('今月の上限に達したら投稿しない', /今月の投稿上限/.test(capped.skipped || ''),
+      JSON.stringify(capped).slice(0, 180));
+    check('使った数と上限を添える', capped.monthly?.used === 450 && capped.monthly?.cap === 450,
+      JSON.stringify(capped.monthly));
+    // 使い切った月でも本文の下見はできること。ここも止めると、残りの日が全部見えなくなる
+    const cappedDry = await cron('mode=races&dryRun=1');
+    check('上限に達しても下見はできる', cappedDry.dryRun === true && !!cappedDry.text,
+      JSON.stringify(cappedDry).slice(0, 160));
+    // 枠が空いたら投稿でき、そのぶんだけ数が増えること。
+    // 失敗や重複を数えてしまうと、使い切っていないのに止まる
+    await redis(['DEL', mKey]);
+    const freed = await cron('mode=races');
+    check('枠が空けば投稿できる', freed.posted?.ok === true, JSON.stringify(freed).slice(0, 140));
+    eq('投稿できたぶんだけ今月の数が増える', (await getJ('/api/bot-status')).body.monthly?.used, 1);
+    // 失敗したぶんは数えないこと。数えてしまうと、使っていない枠で勝手に止まる
+    await seedDay(AI_EDGE, [6]);
+    await redis(['DEL', mKey]);
+    await seed({ failTweets: true });
+    await cron('mode=races');
+    eq('投稿に失敗したぶんは数えない', (await getJ('/api/bot-status')).body.monthly?.used, 0);
+    await seed({ failTweets: false });
+    await redis(['DEL', mKey]);
+
     console.log('\n【8.5】呼び出し側が待てる時間内に応答を返す');
     // cron-job.org の実行タイムアウトは30秒。これを超えると失敗として記録され、
     // 失敗が続くとジョブごと自動停止される。実際にそれで投稿が止まった。
