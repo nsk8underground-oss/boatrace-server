@@ -2166,6 +2166,13 @@ async function postToX(text) {
         : undefined;
       return { ok: false, status: r.status, error: d.detail || d.title || raw.slice(0, 300), hint };
     }
+    // 投稿できたぶんだけ月間カウンタを進める。失敗や重複は数えない。
+    // 書き込みを待つのは、関数が終了すると未完了の書き込みが捨てられるため
+    try {
+      const k = xMonthKey();
+      await redisCmd('INCR', k);
+      await redisCmd('EXPIRE', k, '5529600');   // 64日。翌月分と重ならない長さ
+    } catch {}
     return { ok: true, id: d.data?.id };
   } catch (e) {
     return { ok: false, error: e.name === 'AbortError' ? 'X APIタイムアウト' : e.message };
@@ -2183,12 +2190,13 @@ async function postToX(text) {
 app.get('/api/bot-status', async (req, res) => {
   const hd = todayHd();
   try {
-    const [hold, posted, skipped, logRaw, lastRunRaw] = await Promise.all([
+    const [hold, posted, skipped, logRaw, lastRunRaw, monthRaw] = await Promise.all([
       redisCmd('GET', 'xhold'),
       redisCmd('GET', `xcount:${hd}`),
       redisCmd('GET', `xskip:${hd}`),
       redisCmd('LRANGE', `xlogl:${hd}`, -5, -1),
       redisCmd('GET', 'xlastrun'),
+      redisCmd('GET', xMonthKey()),
     ]);
     let lastRun = null;
     try { lastRun = lastRunRaw ? JSON.parse(lastRunRaw) : null; } catch {}
@@ -2210,6 +2218,9 @@ app.get('/api/bot-status', async (req, res) => {
         lastPosts: log,
       },
       xConfigured: X_ENABLED,                     // 4つの認証情報が揃っているか（値は出さない）
+      // 今月の投稿数。Xの枠を使い切ると HTTP402 で完全に止まるので、残りを見えるようにする
+      monthly: { used: parseInt(monthRaw || '0', 10), cap: X_MONTHLY_CAP,
+        left: Math.max(0, X_MONTHLY_CAP - parseInt(monthRaw || '0', 10)) },
       // 最後に自動投稿が呼ばれた時刻。これが古ければ cron が叩いていない
       lastRun,
       note: lastRun
@@ -2287,6 +2298,19 @@ const SKIP_POST_CAP      = 2;    // 1日に投稿する「見送り」の上限�
 // 失敗が続くとジョブごと自動停止される。実際にそれで投稿が止まった
 // （その日の最初の実行は開催場と時刻表のキャッシュが空で、24場ぶん取りに行くため遅い）。
 // 25秒で応答を返し切り、間に合わないレースは次の実行（15分後）に回す
+// Xの1か月あたりの投稿上限。使い切ると HTTP402 credits depleted が返り、
+// 投稿が完全に止まる（実際に止まった）。これまで月間の投稿数を数えておらず、
+// 壁にぶつかるまで気づけなかった。手前で自分から止めて、残りを見えるようにする。
+// 既定の450はXの無料枠(月500)に余裕を持たせた値。契約に合わせて環境変数で変える
+const X_MONTHLY_CAP = (() => {
+  const v = Number(process.env.X_MONTHLY_CAP);
+  return isFinite(v) && v >= 1 && v <= 100000 ? v : 450;
+})();
+const xMonthKey = () => {
+  const j = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  return `xmonth:${j.getFullYear()}${String(j.getMonth() + 1).padStart(2, '0')}`;
+};
+
 const AUTOPOST_BUDGET_MS = (() => {
   const v = Number(process.env.AUTOPOST_BUDGET_MS);
   return isFinite(v) && v >= 10000 && v <= 55000 ? v : 25000;
@@ -3544,6 +3568,11 @@ app.all('/api/auto-post', async (req, res) => {
         // と言われたときに、取得に失敗したのか結果ページがまだ未確定なのかが分からない
         return res.json({ ok: true, skipped: why, day, counts, pending });
       }
+      const mUsedR = parseInt(await redisCmd('GET', xMonthKey()) || '0');
+      if (!dryRun && mUsedR >= X_MONTHLY_CAP) {
+        return res.json({ ok: true, skipped: `今月の投稿上限(${X_MONTHLY_CAP}件)に到達。翌月まで投稿しません`,
+          monthly: { used: mUsedR, cap: X_MONTHLY_CAP }, day, counts });
+      }
       const text = buildResultTweet(day, rows, { noBet: noBet.length, pending: pending.length, today: day === hd });
       if (dryRun) return res.json({ ok: true, dryRun: true, day, text, xLen: xLen(text), counts, rows, noBet, pending });
       // 結果が出そろったこの時点で、確率と実際の当たりを突き合わせて記録する
@@ -3570,6 +3599,20 @@ app.all('/api/auto-post', async (req, res) => {
 
     const cnt = parseInt(await redisCmd('GET', `xcount:${hd}`) || '0');
     if (cnt >= dailyCap) return res.json({ ok: true, skipped: `本日の投稿上限(${dailyCap}件)に到達` });
+
+    // 月間の上限。使い切ると X が HTTP402 を返して投稿が完全に止まるので、
+    // その手前で自分から止める。止まった理由が分かるほうが、黙って死ぬより良い
+    // 下見(dryRun)は投稿せず枠も使わないので、上限に達していても見られるようにする。
+    // ここで止めると、使い切った月は残り全部の日が下見すらできなくなる
+    const mUsed = parseInt(await redisCmd('GET', xMonthKey()) || '0');
+    if (!dryRun && mUsed >= X_MONTHLY_CAP) {
+      return res.json({
+        ok: true,
+        skipped: `今月の投稿上限(${X_MONTHLY_CAP}件)に到達。翌月まで投稿しません`,
+        monthly: { used: mUsed, cap: X_MONTHLY_CAP },
+        hint: 'Xの契約枠に余裕があるなら環境変数 X_MONTHLY_CAP を上げてください',
+      });
+    }
 
     // 開催場（ダッシュボードと同じ検出ロジック・キャッシュを共有）。
     // その日最初の実行はキャッシュが空で全場を取りに行くため、ここが最も時間を使う。
